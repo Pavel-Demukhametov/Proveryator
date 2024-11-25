@@ -1,6 +1,11 @@
-from fastapi import FastAPI, Form, File, UploadFile  # Добавлен импорт File и UploadFile
+from fastapi import FastAPI, Form, File, UploadFile, HTTPException  # Добавлен импорт File и UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from internal.handlers.handlers import handle_lecture_upload, handle_test_creation
+from fastapi.responses import JSONResponse
+from typing import Optional, List
+from internal.handlers.handlers import handle_lecture_upload, handle_test_creation, TestCreationRequest
+import json
+
+
 
 app = FastAPI()
 
@@ -13,21 +18,23 @@ app.add_middleware(
     allow_headers=["*"],  # Разрешить все заголовки
 )
 
+
+
 @app.post("/api/upload/")
 async def lecture_upload(
-    method: str = Form(...),  # Указываем, что параметр будет передан через форму
-    url: str = Form(None),   # Параметр URL передаётся через форму (опционально)
-    file: UploadFile = File(None),  # Файл (опционально)
-    materials: str = Form(...)  # Материалы лекции (обязательно)
+    method: str = Form(...),
+    url: str = Form(None),
+    file: UploadFile = File(None),
+    materials: str = Form(...)
 ):
     return await handle_lecture_upload(method, url, file, materials)
 
 @app.post("/api/tests/create/")
-async def test_creation(
-    method: str = Form(...),
-    title: str = Form(...),
-    totalQuestions: int = Form(None),
-    themes: str = Form(None),  # JSON-строка с темами
-    lectureMaterials: str = Form(None)
-):
-    return await handle_test_creation(method, title, totalQuestions, themes, lectureMaterials)
+async def test_creation(request: TestCreationRequest):
+    return await handle_test_creation(
+        method=request.method,
+        title=request.title,
+        totalQuestions=request.totalQuestions,
+        themes=request.themes,
+        lectureMaterials=request.lectureMaterials
+    )

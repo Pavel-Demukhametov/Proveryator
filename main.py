@@ -34,7 +34,7 @@ async def test_creation(request: Request):
     try:
         # Получаем данные из запроса как JSON
         data = await request.json()
-        
+        print(data)
         # Извлекаем необходимые параметры из данных
         method = data.get("method")
         title = data.get("title")

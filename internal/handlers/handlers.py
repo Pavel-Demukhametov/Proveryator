@@ -1,34 +1,34 @@
+# internal/handlers/handlers.py
+
 from fastapi import UploadFile, HTTPException
 from fastapi.responses import JSONResponse
-from typing import Optional, List
-from pydantic import BaseModel
-from internal.models import draft
-from transformers import AutoTokenizer, T5ForConditionalGeneration
-from rutermextract import TermExtractor
-from functools import partial
-from natasha import Doc, Segmenter, NewsEmbedding, MorphVocab, NewsMorphTagger
-import nltk
-from nltk.corpus import stopwords
-import torch
+from typing import Optional, List, Union
+from internal.test_generator import TestGenerator
+from internal.schemas import (
+    GeneralTestCreationRequest,
+    ByThemesTestCreationRequest,
+    Theme,
+    Question,
+    TestCreationResponse
+)
+import shutil
+import logging
+# from internal.handlers.text_processing import extract_text_from_pdf, extract_text_from_docx
+import os
 
-class Theme(BaseModel):
-    keyword: str
-    sentences: List[str]
-    questionCount: Optional[int] = None
 
-class TestCreationRequest(BaseModel):
-    method: str
-    title: str
-    totalQuestions: Optional[str] = None
-    themes: Optional[List[Theme]] = None
-    lectureMaterials: Optional[List[str]] = None
+logger = logging.getLogger(__name__)
 
-async def handle_lecture_upload(method: str, url: str, file: UploadFile, materials: str):
-    print(f"url: {url}")
-    print(f"materials: {materials}")
-    print(f"file: {file.filename if file else None}")
 
-    if not materials:
+test_generator = TestGenerator()
+
+
+async def handle_lecture_upload(method: str, url: str, file: UploadFile, materials: Optional[str]):
+    logger.info(f"Method: {method}")
+    logger.info(f"URL: {url}")
+    logger.info(f"File: {file.filename if file else None}")
+
+    if not materials and not (method == 'Device' and file):
         raise HTTPException(
             status_code=400, detail="Материалы лекции обязательны."
         )
@@ -43,26 +43,50 @@ async def handle_lecture_upload(method: str, url: str, file: UploadFile, materia
             status_code=400, detail="Для метода Device требуется файл."
         )
 
-    stop_words = set(stopwords.words('russian'))
-    segmenter = Segmenter()
-    emb = NewsEmbedding()
-    morph_vocab = MorphVocab()
-    morph_tagger = NewsMorphTagger(emb)
+    if method == 'Device' and file:
+        try:
 
-    doc = Doc(materials)
-    doc.segment(segmenter)
+            os.makedirs("uploaded_files", exist_ok=True)
+            file_path = f"uploaded_files/{file.filename}"
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            logger.info(f"Файл {file.filename} успешно сохранен.")
 
-    keywords = draft.extract_keywords(materials)
+            # # Определение типа файла и извлечение текста
+            # file_extension = os.path.splitext(file.filename)[1].lower()
+            # if file_extension == '.pdf':
+            #     materials = extract_text_from_pdf(file_path)
+            # elif file_extension == '.docx':
+            #     materials = extract_text_from_docx(file_path)
+            # else:
+            #     # Для остальных форматов предполагается, что файл содержит текст
+            #     with open(file_path, "r", encoding='utf-8') as f:
+            #         materials = f.read()
+            logger.info(f"Текст успешно извлечён из файла {file.filename}.")
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении или обработке файла: {e}")
+            raise HTTPException(status_code=500, detail=f"Ошибка при сохранении или обработке файла: {e}")
+
+    try:
+        keywords = test_generator.extract_keywords(materials)
+        logger.info(f"Извлечено {len(keywords)} ключевых слов.")
+    except Exception as e:
+        logger.error(f"Ошибка при извлечении ключевых слов: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка при извлечении ключевых слов: {e}")
 
     results = {}
-
+    segments = []
     for keyword in keywords:
         keyword_combined = ' '.join(word.get_word() for word in keyword.words)
-        keyword_lemmatized = draft.tokenize_lemmatize(keyword_combined, segmenter, morph_tagger, morph_vocab)
-        sentences_with_keyword = draft.extract_sentences_with_keyword(doc, keyword_lemmatized, segmenter, morph_tagger, morph_vocab)
+        keyword_lemmatized = test_generator.tokenize_lemmatize(keyword_combined)
+        sentences_with_keyword = test_generator.extract_sentences_with_keyword(materials, keyword_lemmatized)
 
         if sentences_with_keyword:
             results[keyword.normalized] = sentences_with_keyword
+            segments.append({
+                "keyword": keyword.normalized,
+                "sentences": sentences_with_keyword 
+            })
 
     response_data = {
         "message": "Лекция успешно обработана!",
@@ -71,79 +95,113 @@ async def handle_lecture_upload(method: str, url: str, file: UploadFile, materia
         "file_name": file.filename if file else None,
         "materials": materials,
         "results": results,
-        "segments": [
-            {
-                "keyword": keyword.normalized,
-                "sentences": sentences_with_keyword  # Сами предложения, связанные с ключевым словом
-            }
-            for keyword in keywords
-        ]
+        "segments": segments
     }
 
     return JSONResponse(content=response_data, status_code=200)
-    
-async def handle_test_creation(
-    method: str, 
-    title: str, 
-    totalQuestions: Optional[str], 
-    themes: Optional[List[Theme]], 
-    lectureMaterials: Optional[str]
-):
-    if not title:
-        raise HTTPException(status_code=400, detail="Название теста обязательно.")
 
-    if method not in ["general", "byThemes"]:
-        raise HTTPException(status_code=400, detail="Неверный метод создания теста.")
 
-    # Проверка для метода "general"
-    if method == "general":
-        if totalQuestions is None or totalQuestions <= 0:
-            raise HTTPException(status_code=400, detail="Укажите корректное количество вопросов.")
+async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, ByThemesTestCreationRequest]):
+    """
+    Обработчик для создания теста.
+    Генерирует вопросы на основе предоставленных материалов лекции.
+    """
+    try:
+        if isinstance(test_request, GeneralTestCreationRequest):
+            # Для метода 'general', генерируем вопросы на основе всего материала
+            generated_questions = test_generator.process_text(test_request.lectureMaterials)
+            logger.info(f"Сгенерировано {len(generated_questions)} вопросов для теста.")
 
-    # Проверка для метода "byThemes"
-    elif method == "byThemes":
-        if not themes or not isinstance(themes, list):
-            raise HTTPException(status_code=400, detail="Темы обязательны при методе byThemes.")
-        
-        if len(themes) == 0:
-            raise HTTPException(status_code=400, detail="Должна быть выбрана хотя бы одна тема.")
-        print('круто')
-    #     for theme in themes:
-    #             # Проверка для количества вопросов с одним правильным ответом
-    #             if theme.questionCountSingle is None or theme.questionCountSingle <= 0:
-    #                 raise HTTPException(status_code=400, detail=f"Укажите корректное количество вопросов с одним правильным ответом для темы '{theme.title}'.")
+            # Фильтруем вопросы по типу
+            multiple_choice_questions = [q for q in generated_questions if q["type"] == "mc"]
+            open_answer_questions = [q for q in generated_questions if q["type"] == "open"]
 
-    #             # Проверка для количества вопросов с открытым ответом
-    #             if theme.questionCountOpen is None or theme.questionCountOpen <= 0:
-    #                 raise HTTPException(status_code=400, detail=f"Укажите корректное количество вопросов с открытым ответом для темы '{theme.title}'.")
+            # Выбираем необходимое количество вопросов
+            selected_mc = multiple_choice_questions[:test_request.multipleChoiceCount]
+            selected_open = open_answer_questions[:test_request.openAnswerCount]
 
-    # # Печать информации о запросе
-    # print(f"Метод: {method}")
-    # print(f"Название: {title}")
+            test_questions = selected_mc + selected_open
 
-    # if method == "general":
-    #     print(f"Количество вопросов: {totalQuestions}")
-    # elif method == "byThemes":
-    #     print("Вопросы по темам:")
-    #     for theme in themes:
-    #         if theme.isIncluded:
-    #             print(f"  Тема: {theme.title}, Количество вопросов с одним правильным ответом: {theme.questionCountSingle}, Количество вопросов с открытым ответом: {theme.questionCountOpen}")
-    
-    # print(f"Материалы лекции: {lectureMaterials}")
+            # Структурирование вопросов для ответа
+            structured_questions = [
+                Question(
+                    type=q["type"],
+                    question=q["question"],
+                    answer=q["answer"],
+                    sentence=q["sentence"]
+                ) for q in test_questions
+            ]
 
-    # # Обработка текстовых материалов лекции (если есть)
-    # draft.process_text(lectureMaterials)
+            # Структурирование тем для ответа
+            structured_themes = [
+                Theme(
+                    keyword=theme.keyword,
+                    sentences=theme.sentences,
+                    multipleChoiceCount=test_request.multipleChoiceCount,
+                    openAnswerCount=test_request.openAnswerCount
+                ) for theme in test_request.themes
+            ]
 
-    # # Формирование ответа
-    # response_data = {
-    #     "message": "Тест успешно создан.",
-    #     "testId": 1,  # Тут будет логика для создания теста и генерации уникального ID
-    #     "method": method,
-    #     "title": title,
-    #     "totalQuestions": totalQuestions,
-    #     "themes": [theme.dict() for theme in themes] if themes else None,
-    #     "lectureMaterials": lectureMaterials,
-    # }
+            response_data = TestCreationResponse(
+                message="Тест успешно создан.",
+                method=test_request.method,
+                title=test_request.title,
+                lectureMaterials=test_request.lectureMaterials,
+                questions=structured_questions,
+                themes=structured_themes
+            )
 
-    # Возвращаем успешный ответ
-    return JSONResponse(content="some", status_code=200)
+            return JSONResponse(content=response_data.dict(), status_code=200)
+
+        elif isinstance(test_request, ByThemesTestCreationRequest):
+            # Для метода 'byThemes', генерируем вопросы по каждой теме
+            themes_data = [
+                {
+                    "keyword": theme.keyword,
+                    "sentences": theme.sentences,
+                    "multipleChoiceCount": theme.multipleChoiceCount,
+                    "openAnswerCount": theme.openAnswerCount
+                } for theme in test_request.themes
+            ]
+
+            generated_questions = test_generator.process_text_by_theme(themes_data)
+            logger.info(f"Сгенерировано {len(generated_questions)} вопросов для теста по темам.")
+
+            # Структурирование вопросов для ответа
+            structured_questions = [
+                Question(
+                    type=q["type"],
+                    question=q["question"],
+                    answer=q["answer"],
+                    sentence=q["sentence"]
+                ) for q in generated_questions
+            ]
+
+            # Структурирование тем для ответа
+            structured_themes = [
+                Theme(
+                    keyword=theme.keyword,
+                    sentences=theme.sentences,
+                    multipleChoiceCount=theme.multipleChoiceCount,
+                    openAnswerCount=theme.openAnswerCount
+                ) for theme in test_request.themes
+            ]
+
+            response_data = TestCreationResponse(
+                message="Тест по выбранным темам успешно создан.",
+                method=test_request.method,
+                title=test_request.title,
+                lectureMaterials=test_request.lectureMaterials,
+                questions=structured_questions,
+                themes=structured_themes
+            )
+
+            return JSONResponse(content=response_data.dict(), status_code=200)
+
+        else:
+
+            raise HTTPException(status_code=400, detail="Неверный формат запроса.")
+
+    except Exception as e:
+        logger.error(f"Ошибка при создании теста: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка при создании теста: {e}")

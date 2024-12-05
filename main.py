@@ -97,13 +97,11 @@ async def login(user: UserLogin, conn: asyncpg.Connection = Depends(get_db)):
 
 @app.post("/api/upload/")
 async def lecture_upload(
-    method: str = Form(...),
-    url: str = Form(None),
-    file: UploadFile = File(None),
+    file: UploadFile = File(...),
     materials: str = Form(...)
 ):
     logger.info("Получен запрос на загрузку лекции")
-    return await handle_lecture_upload(method, url, file, materials)
+    return await handle_lecture_upload(file, materials)
 
 @app.post("/api/tests/create/")
 async def test_creation(

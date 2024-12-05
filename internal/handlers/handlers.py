@@ -13,7 +13,7 @@ from internal.schemas import (
 )
 import shutil
 import logging
-# from internal.handlers.text_processing import extract_text_from_pdf, extract_text_from_docx
+from internal.utils.text_processing import extract_text_from_pdf, extract_text_from_docx, extract_text_from_txt
 import os
 
 
@@ -22,53 +22,48 @@ logger = logging.getLogger(__name__)
 
 test_generator = TestGenerator()
 
-
-async def handle_lecture_upload(method: str, url: str, file: UploadFile, materials: Optional[str]):
-    logger.info(f"Method: {method}")
-    logger.info(f"URL: {url}")
+async def handle_lecture_upload(file: UploadFile, materials: Optional[str]):
     logger.info(f"File: {file.filename if file else None}")
 
-    if not materials and not (method == 'Device' and file):
+    if not file:
+        raise HTTPException(
+            status_code=400, detail="Файл лекции обязателен."
+        )
+
+    if not materials:
         raise HTTPException(
             status_code=400, detail="Материалы лекции обязательны."
         )
 
-    if method == 'YandexDisk' and not url:
-        raise HTTPException(
-            status_code=400, detail="Для метода YandexDisk требуется ссылка."
-        )
+    try:
+        os.makedirs("uploaded_files", exist_ok=True)
+        file_path = os.path.join("uploaded_files", file.filename)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        logger.info(f"Файл {file.filename} успешно сохранен.")
 
-    if method == 'Device' and not file:
-        raise HTTPException(
-            status_code=400, detail="Для метода Device требуется файл."
-        )
+        # Определение типа файла и извлечение текста
+        file_extension = os.path.splitext(file.filename)[1].lower()
+        if file_extension == '.pdf':
+            extracted_text = extract_text_from_pdf(file_path)
+        elif file_extension == '.docx':
+            extracted_text = extract_text_from_docx(file_path)
+        elif file_extension == '.txt':
+            extracted_text = extract_text_from_txt(file_path)
+        else:
+            # Для остальных форматов предполагается, что файл содержит текст
+            with open(file_path, "r", encoding='utf-8') as f:
+                extracted_text = f.read()
 
-    if method == 'Device' and file:
-        try:
-
-            os.makedirs("uploaded_files", exist_ok=True)
-            file_path = f"uploaded_files/{file.filename}"
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            logger.info(f"Файл {file.filename} успешно сохранен.")
-
-            # # Определение типа файла и извлечение текста
-            # file_extension = os.path.splitext(file.filename)[1].lower()
-            # if file_extension == '.pdf':
-            #     materials = extract_text_from_pdf(file_path)
-            # elif file_extension == '.docx':
-            #     materials = extract_text_from_docx(file_path)
-            # else:
-            #     # Для остальных форматов предполагается, что файл содержит текст
-            #     with open(file_path, "r", encoding='utf-8') as f:
-            #         materials = f.read()
-            logger.info(f"Текст успешно извлечён из файла {file.filename}.")
-        except Exception as e:
-            logger.error(f"Ошибка при сохранении или обработке файла: {e}")
-            raise HTTPException(status_code=500, detail=f"Ошибка при сохранении или обработке файла: {e}")
+        logger.info(f"Текст успешно извлечён из файла {file.filename}.")
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении или обработке файла: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка при сохранении или обработке файла: {e}")
 
     try:
-        keywords = test_generator.extract_keywords(materials)
+        # Если материал предоставлен как дополнительный ввод, можно объединить с извлечённым текстом
+        combined_materials = f"{materials}\n\n{extracted_text}"
+        keywords = test_generator.extract_keywords(combined_materials)
         logger.info(f"Извлечено {len(keywords)} ключевых слов.")
     except Exception as e:
         logger.error(f"Ошибка при извлечении ключевых слов: {e}")
@@ -79,7 +74,7 @@ async def handle_lecture_upload(method: str, url: str, file: UploadFile, materia
     for keyword in keywords:
         keyword_combined = ' '.join(word.get_word() for word in keyword.words)
         keyword_lemmatized = test_generator.tokenize_lemmatize(keyword_combined)
-        sentences_with_keyword = test_generator.extract_sentences_with_keyword(materials, keyword_lemmatized)
+        sentences_with_keyword = test_generator.extract_sentences_with_keyword(combined_materials, keyword_lemmatized)
 
         if sentences_with_keyword:
             results[keyword.normalized] = sentences_with_keyword
@@ -90,10 +85,8 @@ async def handle_lecture_upload(method: str, url: str, file: UploadFile, materia
 
     response_data = {
         "message": "Лекция успешно обработана!",
-        "method": method,
-        "url": url if method == 'YandexDisk' else None,
-        "file_name": file.filename if file else None,
-        "materials": materials,
+        "file_name": file.filename,
+        "materials": combined_materials,
         "results": results,
         "segments": segments
     }

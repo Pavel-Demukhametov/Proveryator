@@ -46,6 +46,24 @@ class TestGenerator:
 
         return ' '.join(token.text for token in doc.tokens)
 
+    def extract_sentences_with_keyword(self, text: str, keyword_lemmatized: str):
+        """
+        Извлекает предложения из текста, содержащие заданное лемматизированное ключевое слово.
+        
+        :param text: Полный текст лекции.
+        :param keyword_lemmatized: Лемматизированное ключевое слово для поиска.
+        :return: Список предложений, содержащих ключевое слово.
+        """
+        sentences_with_keyword = []
+        doc = Doc(text)
+        doc.segment(self.segmenter)
+        doc.tag_morph(self.morph_tagger)
+        for sent in doc.sents:
+            lemmatized_sent = self.tokenize_lemmatize(sent.text)
+            if keyword_lemmatized in lemmatized_sent:
+                sentences_with_keyword.append(sent.text)
+        return sentences_with_keyword
+
     def generate_question(self, context, answer, question_type='open', n=1, temperature=0.8, num_beams=3):
         if question_type == 'open':
             prompt = self.AAQG_PROMPT_OPEN.format(context=context, answer=answer)
@@ -77,8 +95,8 @@ class TestGenerator:
         for theme in themes:
             keyword = theme['keyword']
             sentences = theme['sentences']
-            multiple_choice_count = theme['multipleChoiceCount']
-            open_answer_count = theme['openAnswerCount']
+            multiple_choice_count = theme.get('multipleChoiceCount', 0)
+            open_answer_count = theme.get('openAnswerCount', 0)
 
             # Объединяем все предложения в один контекст
             combined_sentences = ' '.join(sentences)

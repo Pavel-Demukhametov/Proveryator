@@ -15,6 +15,8 @@ import shutil
 import logging
 from internal.utils.text_processing import extract_text_from_pdf, extract_text_from_docx, extract_text_from_txt
 import os
+import random
+from internal.utils.answer_generation import generate_incorrect_answers
 
 
 logger = logging.getLogger(__name__)
@@ -115,15 +117,29 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
 
             test_questions = selected_mc + selected_open
 
-            # Структурирование вопросов для ответа
-            structured_questions = [
-                Question(
-                    type=q["type"],
-                    question=q["question"],
-                    answer=q["answer"],
-                    sentence=q["sentence"]
-                ) for q in test_questions
-            ]
+            # Структурирование вопросов для ответа с добавлением неверных вариантов для "mc" вопросов
+            structured_questions = []
+            for q in test_questions:
+                if q["type"] == "mc":
+                    # Используем функцию из модуля utils для генерации вариантов ответов
+                    options = generate_incorrect_answers(correct_answer=q["answer"], num_incorrect=3)
+                    # Добавляем в объект вопроса
+                    structured_question = Question(
+                        type=q["type"],
+                        question=q["question"],
+                        answer=q["answer"],      # Правильный ответ
+                        options=options,          # Варианты ответов
+                        sentence=q["sentence"]
+                    )
+                else:
+                    # Для открытых вопросов
+                    structured_question = Question(
+                        type=q["type"],
+                        question=q["question"],
+                        answer=q["answer"],
+                        sentence=q["sentence"]
+                    )
+                structured_questions.append(structured_question)
 
             # Структурирование тем для ответа
             structured_themes = [
@@ -140,7 +156,7 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
                 method=test_request.method,
                 title=test_request.title,
                 lectureMaterials=test_request.lectureMaterials,
-                questions=structured_questions,
+                questions=[q.dict() for q in structured_questions],
                 themes=structured_themes
             )
 
@@ -160,15 +176,29 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
             generated_questions = test_generator.process_text_by_theme(themes_data)
             logger.info(f"Сгенерировано {len(generated_questions)} вопросов для теста по темам.")
 
-            # Структурирование вопросов для ответа
-            structured_questions = [
-                Question(
-                    type=q["type"],
-                    question=q["question"],
-                    answer=q["answer"],
-                    sentence=q["sentence"]
-                ) for q in generated_questions
-            ]
+            # Структурирование вопросов для ответа с добавлением неверных вариантов для "mc" вопросов
+            structured_questions = []
+            for q in generated_questions:
+                if q["type"] == "mc":
+                    # Используем функцию из модуля utils для генерации вариантов ответов
+                    options = generate_incorrect_answers(correct_answer=q["answer"], num_incorrect=3)
+                    # Добавляем в объект вопроса
+                    structured_question = Question(
+                        type=q["type"],
+                        question=q["question"],
+                        answer=q["answer"],      # Правильный ответ
+                        options=options,          # Варианты ответов
+                        sentence=q["sentence"]
+                    )
+                else:
+                    # Для открытых вопросов
+                    structured_question = Question(
+                        type=q["type"],
+                        question=q["question"],
+                        answer=q["answer"],
+                        sentence=q["sentence"]
+                    )
+                structured_questions.append(structured_question)
 
             # Структурирование тем для ответа
             structured_themes = [
@@ -185,14 +215,13 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
                 method=test_request.method,
                 title=test_request.title,
                 lectureMaterials=test_request.lectureMaterials,
-                questions=structured_questions,
+                questions=[q.dict() for q in structured_questions],
                 themes=structured_themes
             )
 
             return JSONResponse(content=response_data.dict(), status_code=200)
 
         else:
-
             raise HTTPException(status_code=400, detail="Неверный формат запроса.")
 
     except Exception as e:

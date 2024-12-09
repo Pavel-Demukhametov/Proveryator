@@ -88,9 +88,25 @@ class TestGenerator:
 
         resulted_texts = self.tokenizer.batch_decode(resulted_tokens, skip_special_tokens=True)
         return resulted_texts
-
+    def process_text(self, text):
+        """
+        Обрабатывает текст и генерирует список вопросов.
+        
+        :param text: Текст для обработки.
+        :return: Список сгенерированных вопросов.
+        """
+        # Предполагается, что текст уже подготовлен и разделен на сегменты/темы
+        keywords = self.extract_keywords(text)
+        questions = []
+        for keyword in keywords:
+            # Для примера, используем ключевое слово как ответ
+            open_questions = self.generate_question(context=text, answer=keyword, question_type='open')
+            mc_questions = self.generate_question(context=text, answer=keyword, question_type='mc')
+            questions.extend(open_questions + mc_questions)
+        return questions
     def process_text_by_theme(self, themes: List[dict]):
         questions = []
+
 
         for theme in themes:
             keyword = theme['keyword']
@@ -102,34 +118,35 @@ class TestGenerator:
             combined_sentences = ' '.join(sentences)
 
             # Генерация открытых вопросов
-            generated_questions_open = self.generate_question(
-                context=combined_sentences,
-                answer=keyword,
-                question_type='open',
-                n=open_answer_count
-            )
-            for question in generated_questions_open:
-                questions.append({
-                    "type": "open",
-                    "answer": keyword,
-                    "sentence": combined_sentences,
-                    "question": question
-                })
+            if open_answer_count > 0:
+                generated_questions_open = self.generate_question(
+                    context=combined_sentences,
+                    answer=keyword,
+                    question_type='open',
+                    n=open_answer_count
+                )
+                for question in generated_questions_open:
+                    questions.append({
+                        "type": "open",
+                        "answer": keyword,
+                        "sentence": combined_sentences,
+                        "question": question
+                    })
 
-            # Генерация вопросов с выбором из нескольких вариантов
-            generated_questions_mc = self.generate_question(
-                context=combined_sentences,
-                answer=keyword,
-                question_type='mc',
-                n=multiple_choice_count
-            )
-            for question in generated_questions_mc:
-                questions.append({
-                    "type": "mc",
-                    "answer": keyword,
-                    "sentence": combined_sentences,
-                    "question": question
-                    # Можно добавить поле "options": [...]
-                })
+            if multiple_choice_count > 0:
+                generated_questions_mc = self.generate_question(
+                    context=combined_sentences,
+                    answer=keyword,
+                    question_type='mc',
+                    n=multiple_choice_count
+                )
+                for question in generated_questions_mc:
+                    questions.append({
+                        "type": "mc",
+                        "answer": keyword,
+                        "sentence": combined_sentences,
+                        "question": question
+                        # Можно добавить поле "options": [...]
+                    })
 
         return questions

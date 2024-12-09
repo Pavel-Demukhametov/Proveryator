@@ -103,26 +103,45 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
     """
     try:
         if isinstance(test_request, GeneralTestCreationRequest):
-            # Для метода 'general', генерируем вопросы на основе всего материала
-            generated_questions = test_generator.process_text(test_request.lectureMaterials)
-            logger.info(f"Сгенерировано {len(generated_questions)} вопросов для теста.")
+            themes_data = []
+            
+            total_multiple_choice = test_request.multipleChoiceCount
+            total_open_answer = test_request.openAnswerCount
+            themes = test_request.themes
+            
+            while total_multiple_choice > 0:
+                theme = random.choice(themes)
+                random_theme = {
+                    "keyword": theme.keyword,
+                    "sentences": theme.sentences,
+                    "multipleChoiceCount": 1,
+                    "openAnswerCount": 0
+                }
+                
+                themes_data.append(random_theme)
+                total_multiple_choice -= 1
+            
+            while total_open_answer > 0:
+                theme = random.choice(themes)
+                random_theme = {
+                    "keyword": theme.keyword,
+                    "sentences": theme.sentences,
+                    "multipleChoiceCount": 0,
+                    "openAnswerCount": 1
+                }
+                themes_data.append(random_theme)
+                total_open_answer -= 1
 
-            # Фильтруем вопросы по типу
-            multiple_choice_questions = [q for q in generated_questions if q["type"] == "mc"]
-            open_answer_questions = [q for q in generated_questions if q["type"] == "open"]
-
-            # Выбираем необходимое количество вопросов
-            selected_mc = multiple_choice_questions[:test_request.multipleChoiceCount]
-            selected_open = open_answer_questions[:test_request.openAnswerCount]
-
-            test_questions = selected_mc + selected_open
+            generated_questions = test_generator.process_text_by_theme(themes_data)
+            print(len(themes))
+            logger.info(f"Сгенерировано {len(generated_questions)} вопросов для теста по темам.")
 
             # Структурирование вопросов для ответа с добавлением неверных вариантов для "mc" вопросов
             structured_questions = []
-            for q in test_questions:
+            for q in generated_questions:
                 if q["type"] == "mc":
                     # Используем функцию из модуля utils для генерации вариантов ответов
-                    options = generate_incorrect_answers(correct_answer=q["answer"], num_incorrect=3)
+                    options = generate_incorrect_answers(correct_answer=q["answer"], num_incorrect=3, lecture_text=q["sentence"])
                     # Добавляем в объект вопроса
                     structured_question = Question(
                         type=q["type"],
@@ -145,14 +164,12 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
             structured_themes = [
                 Theme(
                     keyword=theme.keyword,
-                    sentences=theme.sentences,
-                    multipleChoiceCount=test_request.multipleChoiceCount,
-                    openAnswerCount=test_request.openAnswerCount
+                    sentences=theme.sentences
                 ) for theme in test_request.themes
             ]
 
             response_data = TestCreationResponse(
-                message="Тест успешно создан.",
+                message="Тест по выбранным темам успешно создан.",
                 method=test_request.method,
                 title=test_request.title,
                 lectureMaterials=test_request.lectureMaterials,
@@ -161,7 +178,6 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
             )
 
             return JSONResponse(content=response_data.dict(), status_code=200)
-
         elif isinstance(test_request, ByThemesTestCreationRequest):
             # Для метода 'byThemes', генерируем вопросы по каждой теме
             themes_data = [
@@ -181,7 +197,7 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
             for q in generated_questions:
                 if q["type"] == "mc":
                     # Используем функцию из модуля utils для генерации вариантов ответов
-                    options = generate_incorrect_answers(correct_answer=q["answer"], num_incorrect=3)
+                    options = generate_incorrect_answers(correct_answer=q["answer"], num_incorrect=3, lecture_text=q["sentence"])
                     # Добавляем в объект вопроса
                     structured_question = Question(
                         type=q["type"],

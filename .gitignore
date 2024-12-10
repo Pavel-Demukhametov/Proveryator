@@ -1,2 +1,6 @@
 venv/
 __pycache__/
+final_model/
+question_generation_model/
+gift_files/
+uploaded_files/

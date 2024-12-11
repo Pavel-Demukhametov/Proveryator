@@ -1,19 +1,18 @@
-# internal/schemas.py
-
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from typing import List, Optional, Literal, Union
-
 
 
 class GeneralTheme(BaseModel):
     keyword: str
     sentences: List[str]  
 
+
 class ByThemesTheme(BaseModel):
     keyword: str
     sentences: List[str]
     multipleChoiceCount: int = Field(..., ge=1, description="Количество вопросов с одним правильным ответом.")
     openAnswerCount: int = Field(..., ge=1, description="Количество вопросов с открытым ответом.")
+
 
 class Theme(BaseModel):
     keyword: str
@@ -25,10 +24,18 @@ class Theme(BaseModel):
 class GeneralTestCreationRequest(BaseModel):
     method: Literal['general']
     title: str
-    multipleChoiceCount: int = Field(..., ge=1, description="Общее количество вопросов с одним правильным ответом.")
-    openAnswerCount: int = Field(..., ge=1, description="Общее количество вопросов с открытым ответом.")
+    multipleChoiceCount: Optional[int] = Field(0, ge=0, description="Общее количество вопросов с одним правильным ответом.")
+    openAnswerCount: Optional[int] = Field(0, ge=0, description="Общее количество вопросов с открытым ответом.")
     lectureMaterials: str
     themes: List[GeneralTheme] = Field(..., description="Список тем для метода general.")
+
+    @model_validator(mode='after')
+    def check_question_counts(self):
+        mc = self.multipleChoiceCount or 0
+        oa = self.openAnswerCount or 0
+        if mc <= 0 and oa <= 0:
+            raise ValueError('Необходимо указать хотя бы одно количество вопросов: с одним правильным ответом или с открытым ответом.')
+        return self
 
 
 class ByThemesTestCreationRequest(BaseModel):
@@ -36,7 +43,6 @@ class ByThemesTestCreationRequest(BaseModel):
     title: str
     lectureMaterials: str
     themes: List[ByThemesTheme] = Field(..., min_items=1, description="Должна быть выбрана хотя бы одна тема.")
-
 
 
 TestCreationRequest = Union[GeneralTestCreationRequest, ByThemesTestCreationRequest]
@@ -48,10 +54,8 @@ class Question(BaseModel):
     answer: Optional[str] = None  # Правильный ответ для "open" вопросов
     options: Optional[List[str]] = None  # Варианты ответов для "mc" вопросов
     sentence: str
-
     class Config:
         orm_mode = True
-
 
 
 class TestCreationResponse(BaseModel):

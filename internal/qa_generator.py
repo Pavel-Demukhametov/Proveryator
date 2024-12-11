@@ -118,12 +118,13 @@ class QAGenerator:
 
         return correct_answer
     
-    def gen_questions(self, text: str, num_questions: int) -> List[str]:
+    def gen_questions(self, text: str, num_questions: int, question_type: str = 'mc') -> List[str]:
         """
         Генерирует заданное количество вопросов на основе контекста.
         """
+        input_text = f"Generate a {question_type} question: {text}"
         input_ids = self.tokenizer(
-            text,
+            input_text,
             return_tensors="pt",
             max_length=512,
             truncation=True,
@@ -146,18 +147,25 @@ class QAGenerator:
 
         return questions
     
-    def generate_qa_pairs(self, text: str, num_questions: int = 10) -> List[Dict[str, Optional[List[str]]]]:
+    def generate_qa_pairs(self, text: str, num_questions: int = 10, question_type: str = 'mc') -> List[Dict[str, Optional[List[str]]]]:
         """
         Генерирует пары вопрос-ответ с дистракторами на основе заданного текста.
         """
-        questions = self.gen_questions(text, num_questions)
+        if question_type not in ['mc', 'open']:
+            raise ValueError(f"Неизвестный тип вопроса: {question_type}")
+
+        questions = self.gen_questions(text, num_questions, question_type)
         qa_pairs = []
 
         for quest in questions:
             answer = self.gen_answer(text, quest)
-            distractors = self.gen_distractors(text, answer)
+            if question_type == 'mc':
+                distractors = self.gen_distractors(text, answer)
+            else:
+                distractors = None
 
             qa_pair = {
+                "type": question_type,
                 "Вопрос": quest,
                 "Ответ": answer,
                 "Дистракторы": distractors

@@ -10,8 +10,8 @@ class GeneralTheme(BaseModel):
 class ByThemesTheme(BaseModel):
     keyword: str
     sentences: List[str]
-    multipleChoiceCount: int = Field(..., ge=1, description="Количество вопросов с одним правильным ответом.")
-    openAnswerCount: int = Field(..., ge=1, description="Количество вопросов с открытым ответом.")
+    multipleChoiceCount: int = Field(..., ge=0, description="Количество вопросов с одним правильным ответом.")
+    openAnswerCount: int = Field(..., ge=0, description="Количество вопросов с открытым ответом.")
 
 
 class Theme(BaseModel):

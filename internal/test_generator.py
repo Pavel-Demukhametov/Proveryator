@@ -68,7 +68,7 @@ class TestGenerator:
         if question_type == 'open':
             prompt = self.AAQG_PROMPT_OPEN.format(context=context, answer=answer)
         elif question_type == 'mc':
-            prompt = self.AAQG_PROMPT_MC.format(context=context, answer=answer)
+            prompt = self.AAQG_PROMPT_OPEN.format(context=context, answer=answer)
         else:
             raise ValueError("Неподдерживаемый тип вопроса. Используйте 'open' или 'mc'.")
 
@@ -146,7 +146,6 @@ class TestGenerator:
                         "answer": keyword,
                         "sentence": combined_sentences,
                         "question": question
-                        # Можно добавить поле "options": [...]
                     })
 
         return questions

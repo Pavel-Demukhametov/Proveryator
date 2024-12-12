@@ -27,63 +27,73 @@ logger = logging.getLogger(__name__)
 audio_transcriber = AudioTranscription()  # Инициализируем транскрибера
 test_generator = TestGenerator()
 
-async def handle_lecture_upload(file: UploadFile, materials: Optional[str]):
+async def handle_lecture_upload(file: Optional[UploadFile], materials: Optional[str]):
     logger.info(f"File: {file.filename if file else None}")
 
-    if not file:
+    # Валидация: должно быть хотя бы одно из полей
+    if not file and not materials:
         raise HTTPException(
-            status_code=400, detail="Файл лекции обязателен."
+            status_code=400, detail="Пожалуйста, загрузите файл лекции или введите материалы лекции."
         )
 
-    if not materials:
-        raise HTTPException(
-            status_code=400, detail="Материалы лекции обязательны."
-        )
+    extracted_text = ""
 
     try:
-        os.makedirs("uploaded_files", exist_ok=True)
-        file_path = os.path.join("uploaded_files", file.filename)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        logger.info(f"Файл {file.filename} успешно сохранен.")
+        if file:
+            # Сохранение файла на диск
+            os.makedirs("uploaded_files", exist_ok=True)
+            file_path = os.path.join("uploaded_files", file.filename)
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            logger.info(f"Файл {file.filename} успешно сохранен.")
 
-        # Определение типа файла и извлечение текста
-        file_extension = os.path.splitext(file.filename)[1].lower()
-        extracted_text = ""
+            # Определение типа файла и извлечение текста
+            file_extension = os.path.splitext(file.filename)[1].lower()
 
-        if file_extension == '.pdf':
-            extracted_text = extract_text_from_pdf(file_path)
-        elif file_extension == '.docx':
-            extracted_text = extract_text_from_docx(file_path)
-        elif file_extension == '.txt':
-            extracted_text = extract_text_from_txt(file_path)
-        elif file_extension in ['.mp4', '.avi', '.mov', '.mkv']:
-            # Обработка видео файлов
-            audio_extracted_path = os.path.join("uploaded_files", f"{os.path.splitext(file.filename)[0]}.wav")
-            audio_transcriber.extract_audio_from_video(file_path, audio_extracted_path)
-            transcription = audio_transcriber.transcribe(audio_extracted_path)
-            extracted_text = transcription
-            logger.info(f"Транскрибированный текст из видео файла {file.filename} успешно получен.")
-        elif file_extension in ['.mp3', '.wav', '.flac', '.aac', '.ogg']:
-            # Обработка аудио файлов
-            wav_path = os.path.join("uploaded_files", f"{os.path.splitext(file.filename)[0]}.wav")
-            audio_transcriber.convert_audio_to_wav(file_path, wav_path)
-            transcription = audio_transcriber.transcribe(wav_path)
-            extracted_text = transcription
-            logger.info(f"Транскрибированный текст из аудио файла {file.filename} успешно получен.")
-        else:
-            # Для остальных форматов предполагается, что файл содержит текст
-            with open(file_path, "r", encoding='utf-8') as f:
-                extracted_text = f.read()
-            logger.info(f"Текст успешно извлечён из файла {file.filename}.")
-
+            if file_extension == '.pdf':
+                extracted_text = extract_text_from_pdf(file_path)
+            elif file_extension == '.docx':
+                extracted_text = extract_text_from_docx(file_path)
+            elif file_extension == '.txt':
+                extracted_text = extract_text_from_txt(file_path)
+            elif file_extension in ['.mp4', '.avi', '.mov', '.mkv']:
+                # Обработка видео файлов
+                audio_extracted_path = os.path.join("uploaded_files", f"{os.path.splitext(file.filename)[0]}.wav")
+                audio_transcriber.extract_audio_from_video(file_path, audio_extracted_path)
+                transcription = audio_transcriber.transcribe(audio_extracted_path)
+                extracted_text = transcription
+                logger.info(f"Транскрибированный текст из видео файла {file.filename} успешно получен.")
+            elif file_extension in ['.mp3', '.wav', '.flac', '.aac', '.ogg']:
+                # Обработка аудио файлов
+                wav_path = os.path.join("uploaded_files", f"{os.path.splitext(file.filename)[0]}.wav")
+                audio_transcriber.convert_audio_to_wav(file_path, wav_path)
+                transcription = audio_transcriber.transcribe(wav_path)
+                extracted_text = transcription
+                logger.info(f"Транскрибированный текст из аудио файла {file.filename} успешно получен.")
+            else:
+                # Для остальных форматов предполагается, что файл содержит текст
+                try:
+                    with open(file_path, "r", encoding='utf-8') as f:
+                        extracted_text = f.read()
+                    logger.info(f"Текст успешно извлечён из файла {file.filename}.")
+                except Exception as e:
+                    logger.error(f"Ошибка при чтении текстового файла {file.filename}: {e}")
+                    raise HTTPException(status_code=400, detail=f"Неподдерживаемый формат файла или ошибка при чтении файла {file.filename}.")
     except Exception as e:
         logger.error(f"Ошибка при сохранении или обработке файла: {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка при сохранении или обработке файла: {e}")
 
     try:
         # Если материал предоставлен как дополнительный ввод, можно объединить с извлечённым текстом
-        combined_materials = f"{materials}\n\n{extracted_text}"
+        if materials:
+            combined_materials = materials
+            if extracted_text:
+                combined_materials += f"\n\n{extracted_text}"
+        else:
+            combined_materials = extracted_text  # Если только файл или только материалы
+
+        logger.info(f"Объединённые материалы лекции:\n{combined_materials}")
+
         keywords = test_generator.extract_keywords(combined_materials)
         logger.info(f"Извлечено {len(keywords)} ключевых слов.")
     except Exception as e:
@@ -106,7 +116,7 @@ async def handle_lecture_upload(file: UploadFile, materials: Optional[str]):
 
     response_data = {
         "message": "Лекция успешно обработана!",
-        "file_name": file.filename,
+        "file_name": file.filename if file else None,
         "materials": combined_materials,
         "results": results,
         "segments": segments
@@ -122,30 +132,26 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
     """
     try:
         if isinstance(test_request, GeneralTestCreationRequest):
-            # Инициализация требуемых количеств вопросов
             total_mc = test_request.multipleChoiceCount
             total_oa = test_request.openAnswerCount
 
             if total_mc <= 0 and total_oa <= 0:
                 raise HTTPException(status_code=400, detail="Необходимо указать хотя бы одно количество вопросов: с одним правильным ответом или с открытым ответом.")
 
-            # Получение списка тем и их перемешивание для случайного выбора
             themes = test_request.themes.copy()
             random.shuffle(themes)
 
             generated_questions = []
 
             for theme in themes:
-                # Определение количества вопросов, которые можно сгенерировать из этой темы
-                remaining_mc = total_mc - sum(1 for q in generated_questions if q["type"] == "mc")
-                remaining_oa = total_oa - sum(1 for q in generated_questions if q["type"] == "open")
+                remaining_mc = total_mc - sum(1 for q in generated_questions if q.get("type") == "mc")
+                remaining_oa = total_oa - sum(1 for q in generated_questions if q.get("type") == "open")
 
                 if remaining_mc <= 0 and remaining_oa <= 0:
-                    break  # Достигнуто требуемое количество вопросов
+                    break
 
-                # Определение количества вопросов для генерации из этой темы
-                mc_to_generate = min(remaining_mc, max(1, int(total_mc / len(themes))))
-                oa_to_generate = min(remaining_oa, max(1, int(total_oa / len(themes))))
+                mc_to_generate = min(remaining_mc, max(1, int(total_mc / len(themes)))) if total_mc > 0 else 0
+                oa_to_generate = min(remaining_oa, max(1, int(total_oa / len(themes)))) if total_oa > 0 else 0
 
                 # Генерация MC вопросов
                 if mc_to_generate > 0:
@@ -173,9 +179,11 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
                     except Exception as e:
                         logger.error(f"Ошибка при генерации Open вопросов из темы '{theme.keyword}': {e}")
 
-            # Проверка, достигнуто ли требуемое количество вопросов
-            actual_mc = sum(1 for q in generated_questions if q["type"] == "mc")
-            actual_oa = sum(1 for q in generated_questions if q["type"] == "open")
+            # Логирование всех сгенерированных вопросов
+            logger.debug(f"Итого сгенерировано вопросов: {generated_questions}")
+
+            actual_mc = sum(1 for q in generated_questions if q.get("type") == "mc")
+            actual_oa = sum(1 for q in generated_questions if q.get("type") == "open")
 
             if actual_mc < total_mc or actual_oa < total_oa:
                 logger.warning("Не удалось сгенерировать требуемое количество вопросов из предоставленных тем.")
@@ -313,8 +321,8 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
                 method=test_request.method,
                 title=test_request.title,
                 lectureMaterials=test_request.lectureMaterials,
-                questions=[q.dict() for q in structured_questions],
-                themes=[t.dict() for t in structured_themes]
+                questions=structured_questions,  # Убрали .dict()
+                themes=structured_themes  # Убрали .dict()
             )
 
             return JSONResponse(content=response_data.dict(), status_code=200)

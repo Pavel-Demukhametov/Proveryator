@@ -17,10 +17,12 @@ from internal.schemas import (
     Token,
     TokenData
 )
+from internal.test_generator import TestGenerator
 from typing import List  # Импортируем List для аннотации типов
 from internal.database import get_db
 import json
 from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
 from pydantic import ValidationError
 import asyncpg
 from jose import JWTError, jwt
@@ -48,7 +50,7 @@ app.add_middleware(
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login/")
-
+test_generator = TestGenerator()
 logger = logging.getLogger("main")
 logger.setLevel(logging.INFO)
 
@@ -88,6 +90,15 @@ async def get_current_user(token: str = Depends(oauth2_scheme), conn: asyncpg.Co
 async def ping():
     return {"message": "pong"}
 
+FILE_PATH = "D:\\Program Files\\Lecture_test_front\\fast\\uploaded_files\\v2.docx"
+
+@app.get("/download-example")
+async def download_file():
+    if not os.path.exists(FILE_PATH):
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    
+    return FileResponse(FILE_PATH, media_type="application/octet-stream", filename="v2.docx")
+
 @app.post("/api/register/", status_code=201)
 async def register_user(request: Request, conn: asyncpg.Connection = Depends(get_db)):
     """
@@ -119,8 +130,9 @@ async def login(user: UserLogin, conn: asyncpg.Connection = Depends(get_db)):
 
 @app.post("/api/upload/")
 async def lecture_upload(
-    file: UploadFile = File(...),
-    materials: str = Form(...)
+    method: Optional[str] = Form(None),  # Если метод используется, иначе можно убрать
+    file: Optional[UploadFile] = File(None),
+    materials: Optional[str] = Form(None)
 ):
     logger.info("Получен запрос на загрузку лекции")
     return await handle_lecture_upload(file, materials)
@@ -196,10 +208,48 @@ async def test_creation(
                 logger.error(f"Валидационная ошибка: {ve}")
                 raise HTTPException(status_code=400, detail=ve.errors())
         elif method == "byThemes":
+            results = {}
+            segments = []
+            combined_materials = data.get('lectureMaterials', '')  # Ensure the lecture materials are properly retrieved
+    
+            # Extract the themes from the incoming data
+            themes_data = data.get('themes', [])
+            
+            # Extract the keywords and ensure to include multipleChoiceCount and openAnswerCount
+            for theme in themes_data:
+                keyword = theme['keyword']
+                multiple_choice_count = theme.get('multipleChoiceCount', 0)  # Default to 0 if not provided
+                open_answer_count = theme.get('openAnswerCount', 0)  # Default to 0 if not provided
+                
+                # Combine and lemmatize the keyword (if needed)
+                keyword_lemmatized = test_generator.tokenize_lemmatize(keyword)
+                
+                # Extract sentences that contain the keyword
+                sentences_with_keyword = test_generator.extract_sentences_with_keyword(combined_materials, keyword_lemmatized)
+
+                if sentences_with_keyword:
+                    results[keyword] = sentences_with_keyword
+                    segments.append({
+                        "keyword": keyword,
+                        "sentences": sentences_with_keyword,
+                        "multipleChoiceCount": multiple_choice_count,
+                        "openAnswerCount": open_answer_count
+                    })
+            
             try:
-                test_request = ByThemesTestCreationRequest(**data)
+                # Prepare the data for ByThemesTestCreationRequest
+                test_request_data = {
+                    "method": "byThemes", 
+                    "title": data.get('title', ''),  # Use the title from the request
+                    "lectureMaterials": combined_materials,  # Use the combined_materials (lecture materials)
+                    "themes": segments  # Include the populated themes with required fields
+                }
+                
+                # Create the test request object
+                test_request = ByThemesTestCreationRequest(**test_request_data)
+                
             except ValidationError as ve:
-                logger.error(f"Валидационная ошибка: {ve}")
+                logger.error(f"Validation error: {ve}")
                 raise HTTPException(status_code=400, detail=ve.errors())
         else:
             raise HTTPException(status_code=400, detail="Неверный метод создания теста.")
@@ -238,7 +288,7 @@ async def test_save(
             raise HTTPException(status_code=400, detail="Не указано название теста.")
 
         # Конвертируем данные в формат GIFT
-        gift_content = convert_to_gift(questions, lecture_materials)
+        gift_content = convert_to_gift(questions)
         logger.debug("Конвертация в GIFT выполнена успешно.")
 
         # Формируем имя файла с учетом user_id и названия теста
@@ -263,7 +313,7 @@ async def test_save(
         gift_file = io.BytesIO(gift_content.encode("utf-8"))
 
         # URL-кодирование имени файла для заголовка Content-Disposition
-        encoded_filename = urllib.parse.quote(filename)
+        encoded_filename = urllib.parse.quote(file_name)
         # Устанавливаем заголовок Content-Disposition с поддержкой UTF-8
         # 'filename' содержит ASCII fallback, 'filename*' содержит UTF-8 имя
         content_disposition = f"attachment; filename=\"{encoded_filename}\""

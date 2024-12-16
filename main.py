@@ -1,8 +1,8 @@
 # main.py
 
-from fastapi import FastAPI, Form, File, UploadFile, HTTPException, Request, Depends, status
+from fastapi import FastAPI, Form, File, UploadFile, HTTPException, Request, Depends, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from internal.handlers.handlers import handle_lecture_upload, handle_test_creation
 from internal.handlers.registration import handle_registration
 from internal.handlers.authentication import handle_login
@@ -17,18 +17,15 @@ from internal.schemas import (
     Token,
     TokenData
 )
-from internal.test_generator import TestGenerator
-from typing import List  # Импортируем List для аннотации типов
+from internal.keywords_extractor import KeywordsExtractor
+from typing import List, Optional, Union
 from internal.database import get_db
 import json
-from fastapi.responses import JSONResponse
-from fastapi.responses import FileResponse
 from pydantic import ValidationError
 import asyncpg
 from jose import JWTError, jwt
-from typing import Optional
 from fastapi.security import OAuth2PasswordBearer
-from internal.utils.user import get_current_user  # Импортируем функцию из utils/user.py
+from internal.utils.user import get_current_user
 from internal.utils.gift_generation import convert_to_gift
 from internal.repositories.auth_repository import SECRET_KEY, ALGORITHM
 from internal.repositories.user_repository import get_user_by_email
@@ -38,6 +35,10 @@ import io
 import sys
 import logging
 import urllib.parse
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import aiofiles
+
 app = FastAPI()
 
 # Настройка CORS
@@ -50,7 +51,7 @@ app.add_middleware(
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login/")
-test_generator = TestGenerator()
+keywords_extractor = KeywordsExtractor()
 logger = logging.getLogger("main")
 logger.setLevel(logging.INFO)
 
@@ -64,7 +65,10 @@ if hasattr(handler, 'setEncoding'):
 
 logger.addHandler(handler)
 
-async def get_current_user(token: str = Depends(oauth2_scheme), conn: asyncpg.Connection = Depends(get_db)) -> UserResponse:
+# Создайте глобальный ThreadPoolExecutor для CPU-емких задач
+executor = ThreadPoolExecutor(max_workers=8)  # Настройте количество потоков в зависимости от нагрузки
+
+async def get_current_user_dependency(token: str = Depends(oauth2_scheme), conn: asyncpg.Connection = Depends(get_db)) -> UserResponse:
     """
     Получает текущего пользователя на основе JWT токена.
     """
@@ -104,7 +108,6 @@ async def register_user(request: Request, conn: asyncpg.Connection = Depends(get
     """
     Регистрация нового пользователя.
     """
-    logger.info("Получен запрос на регистрацию пользователя")
 
     try:
         user_data = await request.json()
@@ -130,7 +133,6 @@ async def login(user: UserLogin, conn: asyncpg.Connection = Depends(get_db)):
 
 @app.post("/api/upload/")
 async def lecture_upload(
-    method: Optional[str] = Form(None),  # Если метод используется, иначе можно убрать
     file: Optional[UploadFile] = File(None),
     materials: Optional[str] = Form(None)
 ):
@@ -156,8 +158,10 @@ async def download_gift_file(request: Request):
         questions = data.get("questions", [])
         lecture_materials = data.get("lectureMaterials", [])
 
-        # Конвертация данных в формат GIFT
-        gift_content = convert_to_gift(questions)
+        # Конвертация данных в формат GIFT в отдельном потоке
+        gift_content = await asyncio.get_event_loop().run_in_executor(
+            executor, convert_to_gift, questions
+        )
         logger.debug("Конвертация в GIFT выполнена успешно.")
 
         # Создаём временный файл в памяти
@@ -210,22 +214,14 @@ async def test_creation(
         elif method == "byThemes":
             results = {}
             segments = []
-            combined_materials = data.get('lectureMaterials', '')  # Ensure the lecture materials are properly retrieved
-    
-            # Extract the themes from the incoming data
+            combined_materials = data.get('lectureMaterials', '')
             themes_data = data.get('themes', [])
-            
-            # Extract the keywords and ensure to include multipleChoiceCount and openAnswerCount
             for theme in themes_data:
                 keyword = theme['keyword']
-                multiple_choice_count = theme.get('multipleChoiceCount', 0)  # Default to 0 if not provided
-                open_answer_count = theme.get('openAnswerCount', 0)  # Default to 0 if not provided
-                
-                # Combine and lemmatize the keyword (if needed)
-                keyword_lemmatized = test_generator.tokenize_lemmatize(keyword)
-                
-                # Extract sentences that contain the keyword
-                sentences_with_keyword = test_generator.extract_sentences_with_keyword(combined_materials, keyword_lemmatized)
+                multiple_choice_count = theme.get('multipleChoiceCount', 0)
+                open_answer_count = theme.get('openAnswerCount', 0)
+                keyword_lemmatized = keywords_extractor.tokenize_lemmatize(keyword)
+                sentences_with_keyword = keywords_extractor.extract_sentences_with_keyword(combined_materials, keyword_lemmatized)
 
                 if sentences_with_keyword:
                     results[keyword] = sentences_with_keyword
@@ -237,15 +233,13 @@ async def test_creation(
                     })
             
             try:
-                # Prepare the data for ByThemesTestCreationRequest
                 test_request_data = {
                     "method": "byThemes", 
-                    "title": data.get('title', ''),  # Use the title from the request
-                    "lectureMaterials": combined_materials,  # Use the combined_materials (lecture materials)
-                    "themes": segments  # Include the populated themes with required fields
+                    "title": data.get('title', ''),
+                    "lectureMaterials": combined_materials,
+                    "themes": segments
                 }
-                
-                # Create the test request object
+            
                 test_request = ByThemesTestCreationRequest(**test_request_data)
                 
             except ValidationError as ve:
@@ -253,8 +247,10 @@ async def test_creation(
                 raise HTTPException(status_code=400, detail=ve.errors())
         else:
             raise HTTPException(status_code=400, detail="Неверный метод создания теста.")
-
-        return await handle_test_creation(test_request)
+        response = await asyncio.get_event_loop().run_in_executor(
+            executor, handle_test_creation_sync, test_request
+        )
+        return response
 
     except json.JSONDecodeError:
         logger.error("Некорректный формат JSON.")
@@ -263,12 +259,25 @@ async def test_creation(
         logger.error(f"Ошибка при обработке запроса: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
+def handle_test_creation_sync(test_request: Union[GeneralTestCreationRequest, ByThemesTestCreationRequest]):
+    """
+    Синхронный обработчик для создания теста.
+    Выполняется в отдельном потоке, чтобы не блокировать event loop.
+    """
+    # Создайте новый event loop для выполнения асинхронных задач внутри синхронного контекста
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        response = loop.run_until_complete(handle_test_creation(test_request))
+        return response
+    finally:
+        loop.close()
 
 @app.post("/api/tests/save/")
 async def test_save(
     request: Request,
     conn: asyncpg.Connection = Depends(get_db),
-    current_user: dict = Depends(get_current_user)  # Используем зависимость
+    current_user: UserResponse = Depends(get_current_user_dependency)
 ):
     """
     Сохранение теста для зарегистрированного пользователя.
@@ -287,8 +296,10 @@ async def test_save(
         if not test_name:
             raise HTTPException(status_code=400, detail="Не указано название теста.")
 
-        # Конвертируем данные в формат GIFT
-        gift_content = convert_to_gift(questions)
+        # Конвертируем данные в формат GIFT в отдельном потоке
+        gift_content = await asyncio.get_event_loop().run_in_executor(
+            executor, convert_to_gift, questions
+        )
         logger.debug("Конвертация в GIFT выполнена успешно.")
 
         # Формируем имя файла с учетом user_id и названия теста
@@ -301,21 +312,19 @@ async def test_save(
         file_name = f"{user_id}_{sanitized_test_name}.gift"
         gift_file_path = os.path.join("gift_files", file_name)
 
-        # Убедимся, что папка существует
+        # Асинхронное создание директорий и запись файла
         os.makedirs(os.path.dirname(gift_file_path), exist_ok=True)
-
-        # Сохраняем GIFT файл
-        with open(gift_file_path, "w", encoding="utf-8") as file:
-            file.write(gift_content)
+        async with aiofiles.open(gift_file_path, "w", encoding="utf-8") as file:
+            await file.write(gift_content)
         logger.info(f"GIFT файл сохранён как {gift_file_path}")
 
-        # Создаём временный файл в памяти для отправки
+        # Создаём временный файл в памяти
         gift_file = io.BytesIO(gift_content.encode("utf-8"))
 
         # URL-кодирование имени файла для заголовка Content-Disposition
         encoded_filename = urllib.parse.quote(file_name)
+
         # Устанавливаем заголовок Content-Disposition с поддержкой UTF-8
-        # 'filename' содержит ASCII fallback, 'filename*' содержит UTF-8 имя
         content_disposition = f"attachment; filename=\"{encoded_filename}\""
 
         return StreamingResponse(
@@ -332,16 +341,17 @@ async def test_save(
         raise HTTPException(status_code=500, detail="Произошла ошибка при сохранении файла GIFT.")
 
 @app.get("/api/tests/", response_model=List[str])
-async def get_user_tests(current_user: dict = Depends(get_current_user)):
+async def get_user_tests(current_user: UserResponse = Depends(get_current_user_dependency)):
     """
     Endpoint для получения списка тестов, созданных пользователем.
     Возвращает имена всех файлов, содержащих ID пользователя в названии.
     """
     user_id = current_user.id
 
-    # Получаем список всех файлов в каталоге
+    # Асинхронное чтение каталога
     try:
-        files = os.listdir("gift_files")
+        loop = asyncio.get_event_loop()
+        files = await loop.run_in_executor(None, os.listdir, "gift_files")
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="Каталог с файлами не найден.")
 
@@ -352,48 +362,68 @@ async def get_user_tests(current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Тесты не найдены для данного пользователя.")
 
     # Возвращаем список имен файлов
-    return JSONResponse(content={"files": user_files})
-
+    return user_files
 
 # Route to handle test file downloads
 @app.get("/api/tests/download/{file_name}")
-async def download_file(file_name: str, current_user: dict = Depends(get_current_user)):
+async def download_user_file(file_name: str, current_user: UserResponse = Depends(get_current_user_dependency)):
     """
     Эндпоинт для скачивания файла по его названию.
     Принимает название файла, если файл существует и принадлежит пользователю, возвращает его для скачивания.
     """
-    # Ensure that only safe characters are used in the file name
     user_id = current_user.id
-    sanitized_file_name = "".join(c for c in file_name if c.isalnum() or c in (" ", "_", "-")).rstrip()
 
-    # Build the file path, considering the user_id
-    print(f"{user_id}_{sanitized_file_name}.gift")
-    file_path = os.path.join("gift_files", file_name)
+    logger.info(f"Пользователь {current_user.email} запрашивает файл: {file_name}")
 
-    # Ensure the file exists before trying to send it
-    if not os.path.exists(file_path):
+    # Проверяем, что имя файла начинается с user_id
+    if not file_name.startswith(f"{user_id}_"):
+        logger.warning(f"Доступ запрещён для файла: {file_name}")
+        raise HTTPException(status_code=403, detail="Доступ запрещён.")
+
+    # Санитизация имени файла
+    sanitized_file_name = "".join(c for c in file_name if c.isalnum() or c in (" ", "_", "-", ".")).rstrip()
+
+    # Проверяем, что после санитизации имя файла всё ещё начинается с user_id
+    if not sanitized_file_name.startswith(f"{user_id}_"):
+        logger.warning(f"Доступ запрещён после санитизации для файла: {file_name}")
+        raise HTTPException(status_code=403, detail="Доступ запрещён.")
+
+    # Проверяем, что файл имеет расширение .gift
+    if not sanitized_file_name.endswith(".gift"):
+        logger.warning(f"Неверный формат файла: {sanitized_file_name}")
+        raise HTTPException(status_code=400, detail="Неверный формат файла.")
+
+    file_path = os.path.join("gift_files", sanitized_file_name)
+
+    # Асинхронная проверка существования файла
+    exists = await asyncio.get_event_loop().run_in_executor(None, os.path.exists, file_path)
+    if not exists:
+        logger.error(f"Файл не найден: {file_path}")
         raise HTTPException(status_code=404, detail=f"Файл с названием {file_name} не найден.")
 
     try:
-        with open(file_path, "rb") as file:
-            content = file.read()
+        # Асинхронное чтение файла
+        async with aiofiles.open(file_path, "rb") as f:
+            content = await f.read()
 
-        # Create an in-memory file object for streaming
+        # Создаём объект BytesIO
         file_io = io.BytesIO(content)
-        
-        # URL encode the file name to handle special characters
-        encoded_filename = urllib.parse.quote(file_name)
 
-        # Prepare the content-disposition header
+        # URL кодирование имени файла для корректной передачи
+        encoded_filename = urllib.parse.quote(sanitized_file_name)
+
+        # Подготовка заголовка Content-Disposition
         content_disposition = f"attachment; filename=\"{encoded_filename}\""
 
-        # Return the file as a StreamingResponse
+        logger.info(f"Файл {sanitized_file_name} успешно подготовлен для скачивания.")
+
+        # Возвращаем файл как StreamingResponse
         return StreamingResponse(
             file_io,
             media_type="application/octet-stream",
             headers={"Content-Disposition": content_disposition}
         )
-    
+
     except Exception as e:
         logger.error(f"Ошибка при скачивании файла {file_name}: {e}")
         raise HTTPException(status_code=500, detail="Произошла ошибка при скачивании файла.")

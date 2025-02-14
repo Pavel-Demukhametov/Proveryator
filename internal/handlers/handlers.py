@@ -3,7 +3,7 @@
 from fastapi import UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Optional, List, Union
-from internal.keywords_extractor import KeywordsExtractor
+from internal.term_extractor.term_extractor import MBartTermExtractor
 from internal.schemas import (
     GeneralTestCreationRequest,
     ByThemesTestCreationRequest,
@@ -11,7 +11,7 @@ from internal.schemas import (
     Question,
     TestCreationResponse
 )
-from internal.qa_generator import QAGenerator  # Используем QAGenerator
+from internal.qa_generator import ChatGPTQAGenerator  # Используем QAGenerator
 from internal.utils.text_converter import AudioTranscription  # Импортируем AudioTranscription
 import shutil
 import logging
@@ -23,14 +23,15 @@ from concurrent.futures import ThreadPoolExecutor
 import aiofiles
 
 # Инициализируем генераторы
-qa_generator = QAGenerator()
+qa_generator = ChatGPTQAGenerator()
 audio_transcriber = AudioTranscription()
-keywords_extractor = KeywordsExtractor()
+mbart_extractor = MBartTermExtractor()
 
 logger = logging.getLogger(__name__)
 
 # Создайте глобальный ThreadPoolExecutor для CPU-емких задач
 executor = ThreadPoolExecutor(max_workers=8)  # Настройте количество потоков в зависимости от нагрузки
+
 
 async def handle_lecture_upload(file: Optional[UploadFile], materials: Optional[str]) -> JSONResponse:
     if not file and not materials:
@@ -71,7 +72,6 @@ async def handle_lecture_upload(file: Optional[UploadFile], materials: Optional[
                     executor, audio_transcriber.transcribe, audio_extracted_path
                 )
                 extracted_text = transcription
-                logger.info(f"Транскрибированный текст из видео файла {file.filename} успешно получен.")
             elif file_extension in ['.mp3', '.wav', '.flac', '.aac', '.ogg']:
                 wav_path = os.path.join("uploaded_files", f"{os.path.splitext(file.filename)[0]}.wav")
                 await asyncio.get_event_loop().run_in_executor(
@@ -81,12 +81,10 @@ async def handle_lecture_upload(file: Optional[UploadFile], materials: Optional[
                     executor, audio_transcriber.transcribe, wav_path
                 )
                 extracted_text = transcription
-                logger.info(f"Транскрибированный текст из аудио файла {file.filename} успешно получен.")
             else:
                 try:
                     async with aiofiles.open(file_path, "r", encoding='utf-8') as f:
                         extracted_text = await f.read()
-                    logger.info(f"Текст успешно извлечён из файла {file.filename}.")
                 except Exception as e:
                     logger.error(f"Ошибка при чтении текстового файла {file.filename}: {e}")
                     raise HTTPException(status_code=400, detail=f"Неподдерживаемый формат файла или ошибка при чтении файла {file.filename}.")
@@ -95,6 +93,7 @@ async def handle_lecture_upload(file: Optional[UploadFile], materials: Optional[
         raise HTTPException(status_code=500, detail=f"Ошибка при сохранении или обработке файла: {e}")
 
     try:
+        # Объединяем введённые материалы и извлечённый текст
         if materials:
             combined_materials = materials
             if extracted_text:
@@ -102,38 +101,34 @@ async def handle_lecture_upload(file: Optional[UploadFile], materials: Optional[
         else:
             combined_materials = extracted_text
 
-        logger.info(f"Объединённые материалы лекции:\n{combined_materials}")
 
-        # Асинхронное извлечение ключевых слов
-        keywords = await asyncio.get_event_loop().run_in_executor(
-            executor, keywords_extractor.extract_keywords, combined_materials
+        # Асинхронное извлечение терминов с помощью MBartExtractor
+        terms = await asyncio.get_event_loop().run_in_executor(
+            executor, mbart_extractor.extract_terms, combined_materials
         )
-        logger.info(f"Извлечено {len(keywords)} ключевых слов.")
+        logger.info(f"Извлечено {len(terms)} терминов. {terms}")
+
+        # Асинхронное извлечение предложений, содержащих извлечённые термины
+        term_sentences = await asyncio.get_event_loop().run_in_executor(
+            executor, mbart_extractor.extract_sentences_with_terms, combined_materials, terms
+        )
     except Exception as e:
-        logger.error(f"Ошибка при извлечении ключевых слов: {e}")
-        raise HTTPException(status_code=500, detail=f"Ошибка при извлечении ключевых слов: {e}")
+        logger.error(f"Ошибка при извлечении терминов или предложений: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка при извлечении терминов или предложений: {e}")
 
-    results = {}
     segments = []
-    for keyword in keywords:
-        keyword_combined = keyword  # Используем keyword напрямую, так как это строка
-        keyword_lemmatized = keywords_extractor.tokenize_lemmatize(keyword_combined)
-        sentences_with_keyword = await asyncio.get_event_loop().run_in_executor(
-            executor, keywords_extractor.extract_sentences_with_keyword, combined_materials, keyword_lemmatized
-        )
-
-        if sentences_with_keyword:
-            results[keyword] = sentences_with_keyword  # Используем keyword напрямую
+    for term, sentences in term_sentences.items():
+        if sentences:
             segments.append({
-                "keyword": keyword,
-                "sentences": sentences_with_keyword 
+                "keyword": term,
+                "sentences": sentences
             })
 
     response_data = {
         "message": "Лекция успешно обработана!",
         "file_name": file.filename if file else None,
         "materials": combined_materials,
-        "results": results,
+        "results": term_sentences,
         "segments": segments
     }
 
@@ -183,7 +178,7 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
                             theme_text = ' '.join(theme_sentences)
                             try:
                                 mc_question = await asyncio.get_event_loop().run_in_executor(
-                                    executor, qa_generator.generate_qa_pairs,
+                                    executor, qa_generator.generate_qa,
                                     theme_text, 1, 'mc'
                                 )
                                 question = mc_question[0]
@@ -198,7 +193,6 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
                                     # Уникальный вопрос
                                     generated_questions.append(question)
                                     existing_embeddings.append(question_embedding)
-                                    logger.debug(f"Сгенерирован уникальный MC вопрос из темы '{theme.keyword}': {question['Вопрос']}")
                                     break  # Выход из цикла попыток
                                 else:
                                     logger.debug(f"Найдена похожая MC вопрос из темы '{theme.keyword}': {question['Вопрос']}. Перегенерируем.")
@@ -224,7 +218,7 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
                                 print(len(theme_sentences))
                                 theme_text = ' '.join(theme_sentences)
                                 oa_question = await asyncio.get_event_loop().run_in_executor(
-                                    executor, qa_generator.generate_qa_pairs,
+                                    executor, qa_generator.generate_qa,
                                     theme_text, 1, 'open'
                                 )
                                 question = oa_question[0]
@@ -345,7 +339,7 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
                         theme_text = ' '.join(theme_sentences)
                         try:
                             theme_qas_mc = await asyncio.get_event_loop().run_in_executor(
-                                executor, qa_generator.generate_qa_pairs,
+                                executor, qa_generator.generate_qa,
                                 theme_text, 1, 'mc'
                             )
                             question = theme_qas_mc[0]
@@ -360,7 +354,6 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
                                 # Уникальный вопрос
                                 qa_pairs.append(question)
                                 existing_embeddings.append(question_embedding)
-                                logger.debug(f"Сгенерирован уникальный MC вопрос из темы '{theme['keyword']}': {question['Вопрос']}")
                                 break
                             else:
                                 logger.debug(f"Найдена похожая MC вопрос из темы '{theme['keyword']}': {question['Вопрос']}. Перегенерируем.")
@@ -376,12 +369,10 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
                     attempts = 0
                     while attempts < MAX_ATTEMPTS:
                         theme_sentences = theme_sentences[3:]
-                        print(len(theme_sentences))
-                        # Например, взять первые 3 предложения
                         theme_text = ' '.join(theme_sentences)
                         try:
                             theme_qas_oa = await asyncio.get_event_loop().run_in_executor(
-                                executor, qa_generator.generate_qa_pairs,
+                                executor, qa_generator.generate_qa,
                                 theme_text, 1, 'open'
                             )
                             question = theme_qas_oa[0]
@@ -396,7 +387,6 @@ async def handle_test_creation(test_request: Union[GeneralTestCreationRequest, B
                                 # Уникальный вопрос
                                 qa_pairs.append(question)
                                 existing_embeddings.append(question_embedding)
-                                logger.debug(f"Сгенерирован уникальный Open вопрос из темы '{theme['keyword']}': {question['Вопрос']}")
                                 break
                             else:
                                 logger.debug(f"Найдена похожая Open вопрос из темы '{theme['keyword']}': {question['Вопрос']}. Перегенерируем.")

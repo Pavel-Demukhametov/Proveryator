@@ -25,10 +25,9 @@ def convert_to_gift(data):
         correct_answer = escape_gift(item.get("answer", ""))
 
         label = f"Q{question_number}"
-        question_number += 1  # Увеличиваем счетчик для следующего вопроса
+        question_number += 1 
 
         if question_type == "open":
-            # Предполагается, что для открытых вопросов также может быть обратная связь
             feedback = escape_gift(item.get("feedback", ""))
             if feedback:
                 gift_questions.append(f"::{label}:: {question_text} {{={correct_answer}#{feedback}}}")
@@ -36,17 +35,14 @@ def convert_to_gift(data):
                 gift_questions.append(f"::{label}:: {question_text} {{={correct_answer}}}")
 
         elif question_type == "mc":
-            # Формат для вопроса с множественным выбором с обратной связью (если доступна)
             options = item.get("options", [])
             gift_answers = []
 
             for option in options:
                 if isinstance(option, dict):
-                    # Вариант ответа с обратной связью
                     option_text = escape_gift(option.get("text", ""))
                     option_feedback = escape_gift(option.get("feedback", ""))
                 elif isinstance(option, str):
-                    # Вариант ответа без обратной связи
                     option_text = escape_gift(option)
                     option_feedback = ""
                 else:
@@ -54,19 +50,16 @@ def convert_to_gift(data):
                     continue
 
                 if option_text == correct_answer:
-                    # Правильный ответ
                     if option_feedback:
                         gift_answers.append(f"={option_text}#{option_feedback}")
                     else:
                         gift_answers.append(f"={option_text}")
                 else:
-                    # Неправильный ответ
                     if option_feedback:
                         gift_answers.append(f"~{option_text}#{option_feedback}")
                     else:
                         gift_answers.append(f"~{option_text}")
 
-            # Объединяем все ответы в одну строку
             gift_answer_str = " ".join(gift_answers)
             gift_questions.append(f"::{label}:: {question_text} {{{gift_answer_str}}}")
 

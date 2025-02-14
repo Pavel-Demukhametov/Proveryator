@@ -49,10 +49,10 @@ TestCreationRequest = Union[GeneralTestCreationRequest, ByThemesTestCreationRequ
 
 
 class Question(BaseModel):
-    type: str  # "mc" или "open"
+    type: str 
     question: str
-    answer: Optional[str] = None  # Правильный ответ для "open" вопросов
-    options: Optional[List[str]] = None  # Варианты ответов для "mc" вопросов
+    answer: Optional[str] = None 
+    options: Optional[List[str]] = None  
     sentence: str
     class Config:
         orm_mode = True

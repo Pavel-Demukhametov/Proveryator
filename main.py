@@ -17,7 +17,7 @@ from internal.schemas import (
     Token,
     TokenData
 )
-from internal.keywords_extractor import KeywordsExtractor
+from internal.term_extractor.term_extractor import MBartTermExtractor
 from typing import List, Optional, Union
 from internal.database import get_db
 import json
@@ -51,7 +51,7 @@ app.add_middleware(
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login/")
-keywords_extractor = KeywordsExtractor()
+keywords_extractor = MBartTermExtractor()
 logger = logging.getLogger("main")
 logger.setLevel(logging.INFO)
 
@@ -220,8 +220,7 @@ async def test_creation(
                 keyword = theme['keyword']
                 multiple_choice_count = theme.get('multipleChoiceCount', 0)
                 open_answer_count = theme.get('openAnswerCount', 0)
-                keyword_lemmatized = keywords_extractor.tokenize_lemmatize(keyword)
-                sentences_with_keyword = keywords_extractor.extract_sentences_with_keyword(combined_materials, keyword_lemmatized)
+                sentences_with_keyword = keywords_extractor.extract_sentences_with_terms(combined_materials, keyword)
 
                 if sentences_with_keyword:
                     results[keyword] = sentences_with_keyword
@@ -264,7 +263,6 @@ def handle_test_creation_sync(test_request: Union[GeneralTestCreationRequest, By
     Синхронный обработчик для создания теста.
     Выполняется в отдельном потоке, чтобы не блокировать event loop.
     """
-    # Создайте новый event loop для выполнения асинхронных задач внутри синхронного контекста
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -288,7 +286,6 @@ async def test_save(
         logger.info("Получен запрос на сохранение теста:")
         logger.info(json.dumps(data, ensure_ascii=False, indent=4))
 
-        # Извлекаем название теста из данных
         test_name = data.get("test_name", "default_test").strip()
         questions = data.get("questions", [])
         lecture_materials = data.get("lectureMaterials", [])
@@ -296,35 +293,25 @@ async def test_save(
         if not test_name:
             raise HTTPException(status_code=400, detail="Не указано название теста.")
 
-        # Конвертируем данные в формат GIFT в отдельном потоке
         gift_content = await asyncio.get_event_loop().run_in_executor(
             executor, convert_to_gift, questions
         )
         logger.debug("Конвертация в GIFT выполнена успешно.")
-
-        # Формируем имя файла с учетом user_id и названия теста
-        user_id = current_user.id  # Доступ через атрибуты
+        user_id = current_user.id
         if not user_id:
             raise HTTPException(status_code=400, detail="Не удалось определить пользователя.")
 
-        # Очистка названия теста для использования в имени файла
         sanitized_test_name = "".join(c for c in test_name if c.isalnum() or c in (" ", "_", "-")).rstrip()
         file_name = f"{user_id}_{sanitized_test_name}.gift"
         gift_file_path = os.path.join("gift_files", file_name)
 
-        # Асинхронное создание директорий и запись файла
         os.makedirs(os.path.dirname(gift_file_path), exist_ok=True)
         async with aiofiles.open(gift_file_path, "w", encoding="utf-8") as file:
             await file.write(gift_content)
         logger.info(f"GIFT файл сохранён как {gift_file_path}")
-
-        # Создаём временный файл в памяти
         gift_file = io.BytesIO(gift_content.encode("utf-8"))
-
-        # URL-кодирование имени файла для заголовка Content-Disposition
         encoded_filename = urllib.parse.quote(file_name)
 
-        # Устанавливаем заголовок Content-Disposition с поддержкой UTF-8
         content_disposition = f"attachment; filename=\"{encoded_filename}\""
 
         return StreamingResponse(
@@ -334,7 +321,6 @@ async def test_save(
         )
 
     except HTTPException as he:
-        # HTTPException уже содержит нужный статус и detail
         raise he
     except Exception as e:
         logger.error(f"Ошибка при сохранении файла GIFT: {e}")
@@ -348,23 +334,17 @@ async def get_user_tests(current_user: UserResponse = Depends(get_current_user_d
     """
     user_id = current_user.id
 
-    # Асинхронное чтение каталога
     try:
         loop = asyncio.get_event_loop()
         files = await loop.run_in_executor(None, os.listdir, "gift_files")
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="Каталог с файлами не найден.")
-
-    # Фильтруем файлы, оставляя только те, у которых ID пользователя в имени
     user_files = [file for file in files if str(user_id) in file]
 
     if not user_files:
         raise HTTPException(status_code=404, detail="Тесты не найдены для данного пользователя.")
-
-    # Возвращаем список имен файлов
     return user_files
 
-# Route to handle test file downloads
 @app.get("/api/tests/download/{file_name}")
 async def download_user_file(file_name: str, current_user: UserResponse = Depends(get_current_user_dependency)):
     """

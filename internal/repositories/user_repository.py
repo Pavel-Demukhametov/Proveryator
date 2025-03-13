@@ -27,17 +27,17 @@ async def create_user(conn: asyncpg.Connection, user: UserCreate) -> UserRespons
     Создает нового пользователя.
     """
 
-    hashed_password = ph.hash(user.password)
+    password = ph.hash(user.password)
 
     new_user = await conn.fetchrow(
         """
-        INSERT INTO users (username, email, hashed_password)
+        INSERT INTO users (username, email, password)
         VALUES ($1, $2, $3)
         RETURNING id, username, email
         """,
         user.username,
         user.email,
-        hashed_password
+        password
     )
 
     if not new_user:

@@ -9,13 +9,13 @@ from scipy.spatial.distance import cosine
 import numpy as np
 import logging
 import re
+import requests
+import json
 nltk.download('stopwords')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-import requests
-import json
 
 oauth_url = 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth'
 models_url = 'https://gigachat.devices.sberbank.ru/api/v1/models'
@@ -30,7 +30,6 @@ prompt = (
 )
 
 def get_access_token():
-    """ Получение токена доступа OAuth """
     headers = {
       'Content-Type': 'application/x-www-form-urlencoded',
       'Accept': 'application/json',
@@ -43,16 +42,11 @@ def get_access_token():
     return response.json().get('access_token')
 
 def parse_distractors(response_content: str) -> List[str]:
-    """
-    Парсит дистракторы из строки, учитывая различные форматы.
-    Поддерживает разделение точкой с запятой и/или нумерацию.
-    """
     distractors = []
 
     response_content = re.sub(r'Неправильные варианты ответа[:\-]?\s*', '', response_content, flags=re.IGNORECASE)
     response_content = re.sub(r'3 неправильных варианта ответа[:\-]?\s*', '', response_content, flags=re.IGNORECASE)
 
-    # Измененный шаблон для обработки нумерации с точкой и скобкой
     numbered_distractors = re.findall(r'\d+[.)]\s*([^;]+)', response_content)
     if numbered_distractors and len(numbered_distractors) >= 3:
         distractors = [distractor.strip() for distractor in numbered_distractors[:3]]
@@ -64,8 +58,6 @@ def parse_distractors(response_content: str) -> List[str]:
         distractors = split_distractors[:3]
         logger.info("Дистракторы успешно распознаны без нумерации.")
         return distractors
-
-    # Измененный шаблон для разделения по нумерации с точкой и скобкой
     additional_split = re.split(r'\d+[.)]\s*', response_content)
     additional_split = [distractor.strip() for distractor in additional_split if distractor.strip()]
     if len(additional_split) >= 3:
@@ -83,7 +75,6 @@ def parse_distractors(response_content: str) -> List[str]:
     return distractors
 
 def generate_distractors(access_token: str, text: str, correct_answer: str) -> List[str]:
-    """Генерация дистракторов на основе текста и правильного ответа"""
     if not access_token:
         logger.error("Отсутствует токен доступа OAuth.")
         return []
@@ -144,8 +135,6 @@ def generate_distractors(access_token: str, text: str, correct_answer: str) -> L
     logger.info(f"Дистракторы успешно сгенерированы: {distractors}")
     return distractors
 
-
-
 class QAGenerator:
     def __init__(
         self,
@@ -173,26 +162,17 @@ class QAGenerator:
         self.emb_model = self._load_embedding_model()
 
     def _load_embedding_model(self) -> KeyedVectors:
-        """
-        Конвертирует модель Natasha NewsEmbedding в формат Gensim KeyedVectors.
-        """
         news_emb = NewsEmbedding()
         return self._as_gensim(news_emb)
     
     @staticmethod
     def _as_gensim(navec_model) -> KeyedVectors:
-        """
-        Преобразует модель Natasha в формат Gensim KeyedVectors.
-        """
         model = KeyedVectors(vector_size=navec_model.pq.dim)
         weights = navec_model.pq.unpack()
         model.add_vectors(navec_model.vocab.words, weights)
         return model
     
     def get_sentence_embedding(self, text: str) -> Optional[np.ndarray]:
-        """
-        Вычисляет векторное представление предложения путем усреднения векторов слов.
-        """
         tokens = self.tokenize(text)
         filtered_tokens = self.model_words_filter(tokens)
         if not filtered_tokens:
@@ -204,31 +184,20 @@ class QAGenerator:
         return embedding
 
     def is_similar(self, existing_embeddings: List[np.ndarray], new_embedding: np.ndarray, threshold: float = 0.8) -> bool:
-        """
-        Проверяет, схож ли новый вектор с уже существующими.
-        """
         for emb in existing_embeddings:
             similarity = 1 - cosine(emb, new_embedding)
             if similarity >= threshold:
                 return True
         return False
     def tokenize(self, text: str) -> List[str]:
-        """
-        Токенизирует текст, используя Natasha.
-        """
         doc = Doc(text)
         doc.segment(self.segmenter)
         return [token.text.lower() for token in doc.tokens]
     
     def model_words_filter(self, tokens: List[str]) -> List[str]:
-        """
-        Фильтрует токены, оставляя только те, которые присутствуют в модели и не являются стоп-словами или пунктуацией.
-        """
         return [token for token in tokens if token in self.emb_model and token not in self.stop_words and token not in self.punct]
+
     def gen_distractors(self, text: str, answer: str):
-        """
-        Генерация дистракторов через GigaChat API.
-        """
         result = generate_distractors(self.access_token, text, answer)
         if isinstance(result, list):
             return result
@@ -236,9 +205,6 @@ class QAGenerator:
             return []
     
     def gen_answer(self, text: str, question: str) -> str:
-        """
-        Генерирует ответ на заданный вопрос на основе контекста.
-        """
         input_text = f"{question} {text}"
         
         input_ids = self.tokenizer(
@@ -260,9 +226,6 @@ class QAGenerator:
         return correct_answer
     
     def gen_questions(self, text: str, num_questions: int, question_type: str = 'mc') -> List[str]:
-        """
-        Генерирует заданное количество вопросов на основе контекста.
-        """
         input_ids = self.tokenizer(
             text,
             return_tensors="pt",
@@ -288,9 +251,6 @@ class QAGenerator:
         return questions
     
     def generate_qa_pairs(self, text: str, num_questions: int = 10, question_type: str = 'mc') -> List[Dict[str, Optional[List[str]]]]:
-        """
-        Генерирует пары вопрос-ответ с дистракторами на основе заданного текста.
-        """
         if question_type not in ['mc', 'open']:
             raise ValueError(f"Неизвестный тип вопроса: {question_type}")
 

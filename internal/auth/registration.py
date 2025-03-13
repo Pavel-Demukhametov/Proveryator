@@ -22,5 +22,7 @@ async def handle_registration(user: UserCreate, conn: asyncpg.Connection) -> JSO
     if existing_email:
         raise HTTPException(status_code=400, detail="Email уже зарегистрирован.")
     new_user = await create_user(conn, user)
-
-    return JSONResponse(content=new_user.dict(), status_code=201)
+    return JSONResponse(
+        content={**new_user.dict(), "id": str(new_user.id)}, 
+        status_code=201
+    )

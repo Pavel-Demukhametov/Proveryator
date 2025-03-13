@@ -14,16 +14,16 @@ import os
 
 ph = PasswordHasher()
 
-SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key_here")
+SECRET_KEY = os.getenv("SECRET_KEY", "secret")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
+def verify_password(plain_password: str, password: str) -> bool:
     """
     Проверяет соответствие пароля с хэшем.
     """
     try:
-        ph.verify(hashed_password, plain_password)
+        ph.verify(password, plain_password)
         return True
     except VerifyMismatchError:
         return False
@@ -54,7 +54,7 @@ async def authenticate_user(conn: asyncpg.Connection, email: str, password: str)
     user = await get_user_by_email(conn, email)
     if not user:
         return None
-    if not verify_password(password, user['hashed_password']):
+    if not verify_password(password, user['password']):
         return None
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(

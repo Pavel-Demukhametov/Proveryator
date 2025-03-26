@@ -33,7 +33,6 @@ from internal.utils.user import get_current_user
 from internal.utils.gift_generation import convert_to_gift
 from internal.repositories.auth_repository import SECRET_KEY, ALGORITHM
 from internal.repositories.user_repository import get_user_by_email
-from internal.repositories.test_repository import get_all_test_types
 
 from typing import List, Optional, Union
 import asyncpg
@@ -77,7 +76,7 @@ minio_client = Minio(
 BUCKET_NAME = "proveryator"
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login/")
-keywords_extractor = MBartTermExtractor()
+keyword_extractor = MBartTermExtractor()
 logger = logging.getLogger("main")
 logger.setLevel(logging.INFO)
 
@@ -202,6 +201,7 @@ async def download_gift_file(request: Request):
         logger.error(f"Ошибка при создании файла GIFT: {e}")
         raise HTTPException(status_code=500, detail="Произошла ошибка при создании файла GIFT.")
 
+
 @app.post("/api/tests/create/")
 async def test_creation(
     request: Request,
@@ -220,51 +220,25 @@ async def test_creation(
             try:
                 test_request = GeneralTestCreationRequest(**data)
             except ValidationError as ve:
-                logger.error(f"Валидационная ошибка: {ve}")
                 raise HTTPException(status_code=400, detail=ve.errors())
+
         elif method == "byThemes":
-            results = {}
-            segments = []
-            combined_materials = data.get('lectureMaterials', '')
-            themes_data = data.get('themes', [])
-            for theme in themes_data:
-                keyword = theme['keyword']
-                multiple_choice_count = theme.get('multipleChoiceCount', 0)
-                open_answer_count = theme.get('openAnswerCount', 0)
-                sentences_with_keyword = keywords_extractor.extract_sentences_with_term(combined_materials, keyword)
-                if sentences_with_keyword:
-                    results[keyword] = sentences_with_keyword
-                    segments.append({
-                        "keyword": keyword,
-                        "sentences": sentences_with_keyword,
-                        "multipleChoiceCount": multiple_choice_count,
-                        "openAnswerCount": open_answer_count
-                    })
-         
             try:
-                test_request_data = {
-                    "method": "byThemes", 
-                    "title": data.get('title', ''),
-                    "lectureMaterials": combined_materials,
-                    "themes": segments
-                }
-                test_request = ByThemesTestCreationRequest(**test_request_data)
-                
+                test_request = ByThemesTestCreationRequest(**data)
             except ValidationError as ve:
-                logger.error(f"Validation error: {ve}")
                 raise HTTPException(status_code=400, detail=ve.errors())
+
         else:
             raise HTTPException(status_code=400, detail="Неверный метод создания теста.")
+        # Асинхронный вызов синхронной функции для обработки создания теста
         response = await asyncio.get_event_loop().run_in_executor(
-            executor, handle_test_creation_sync, test_request
+            None, handle_test_creation_sync, test_request
         )
         return response
 
     except json.JSONDecodeError:
-        logger.error("Некорректный формат JSON.")
         raise HTTPException(status_code=400, detail="Некорректный формат JSON.")
     except Exception as e:
-        logger.error(f"Ошибка при обработке запроса: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 def handle_test_creation_sync(test_request: Union[GeneralTestCreationRequest, ByThemesTestCreationRequest]):
@@ -330,7 +304,7 @@ async def get_user_tests(current_user = Depends(get_current_user_dependency)):
     try:
         objects = minio_client.list_objects(BUCKET_NAME, prefix="", recursive=True)
         user_files = [
-            obj.object_name.split("_", 1)[1]  # Убираем user_id из имени файла
+            obj.object_name.split("_", 1)[1] 
             for obj in objects if obj.object_name.startswith(f"{user_id}_")
         ]
 
@@ -378,16 +352,3 @@ async def download_user_file(
         raise HTTPException(status_code=500, detail=f"Ошибка MinIO: {str(s3e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail="Ошибка при скачивании файла.")
-
-@app.get("/api/types/", response_model=List[QuestionTypeResponse])
-async def get_all_question_types(
-    conn: asyncpg.Connection = Depends(get_db)
-):
-    """
-    Эндпоинт для получения всех типов вопросов.
-    """
-    try:
-        question_types = await get_all_test_types(conn)
-        return question_types
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Ошибка при получении типов вопросов.")

@@ -1,6 +1,7 @@
 # tests/test_user.py
 
 import pytest
+from uuid import uuid4
 from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi import HTTPException
 from internal.utils.user import get_current_user
@@ -19,12 +20,12 @@ class TestGetCurrentUser:
         payload = {"sub": "user@example.com"}
         mock_jwt_decode.return_value = payload
 
-        # Настройка мока для get_user_by_email
+        # Создаем UUID для поля id
+        user_id = uuid4()
         user_data = {
-            "id": 1,
+            "id": user_id,
             "email": "user@example.com",
-            "name": "Test User",
-            "username": "testuser"  # Добавлено поле username
+            "username": "testuser"
         }
         mock_get_user_by_email.return_value = user_data
 
@@ -47,18 +48,13 @@ class TestGetCurrentUser:
     @patch('internal.utils.user.jwt.decode', side_effect=JWTError("Token decode error"))
     @patch('internal.utils.user.get_db')
     async def test_get_current_user_invalid_token(self, mock_get_db, mock_jwt_decode, mock_get_user_by_email):
-        # Настройка мока для jwt.decode (генерирует ошибку)
         token = "invalid.token.string"
-
-        # Настройка мока для get_db (возвращает мок соединения)
         mock_conn = MagicMock()
         mock_get_db.return_value = mock_conn
 
-        # Вызов функции и ожидание исключения
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(token=token, conn=mock_conn)
 
-        # Проверки
         mock_jwt_decode.assert_called_once_with(token, SECRET_KEY, algorithms=[ALGORITHM])
         mock_get_user_by_email.assert_not_called()
         assert exc_info.value.status_code == 401
@@ -68,20 +64,16 @@ class TestGetCurrentUser:
     @patch('internal.utils.user.jwt.decode')
     @patch('internal.utils.user.get_db')
     async def test_get_current_user_no_sub_in_token(self, mock_get_db, mock_jwt_decode, mock_get_user_by_email):
-        # Настройка мока для jwt.decode (отсутствует "sub")
         token = "token.without.sub"
         payload = {}
         mock_jwt_decode.return_value = payload
 
-        # Настройка мока для get_db (возвращает мок соединения)
         mock_conn = MagicMock()
         mock_get_db.return_value = mock_conn
 
-        # Вызов функции и ожидание исключения
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(token=token, conn=mock_conn)
 
-        # Проверки
         mock_jwt_decode.assert_called_once_with(token, SECRET_KEY, algorithms=[ALGORITHM])
         mock_get_user_by_email.assert_not_called()
         assert exc_info.value.status_code == 401
@@ -91,20 +83,16 @@ class TestGetCurrentUser:
     @patch('internal.utils.user.jwt.decode')
     @patch('internal.utils.user.get_db')
     async def test_get_current_user_user_not_found(self, mock_get_db, mock_jwt_decode, mock_get_user_by_email):
-        # Настройка мока для jwt.decode
         token = "valid.token.string"
         payload = {"sub": "nonexistent@example.com"}
         mock_jwt_decode.return_value = payload
 
-        # Настройка мока для get_db (возвращает мок соединения)
         mock_conn = MagicMock()
         mock_get_db.return_value = mock_conn
 
-        # Вызов функции и ожидание исключения
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(token=token, conn=mock_conn)
 
-        # Проверки
         mock_jwt_decode.assert_called_once_with(token, SECRET_KEY, algorithms=[ALGORITHM])
         mock_get_user_by_email.assert_awaited_once_with(mock_conn, "nonexistent@example.com")
         assert exc_info.value.status_code == 401

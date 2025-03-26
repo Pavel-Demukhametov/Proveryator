@@ -71,48 +71,48 @@
 #             results[term] = matching_sentences
 #         return results
 
-import torch
-from transformers import MBartForConditionalGeneration, MBart50TokenizerFast
-from natasha import Doc, Segmenter, NewsEmbedding, MorphVocab, NewsMorphTagger
+# import torch
+# from transformers import MBartForConditionalGeneration, MBart50TokenizerFast
+# from natasha import Doc, Segmenter, NewsEmbedding, MorphVocab, NewsMorphTagger
 
-class MBartTermExtractor:
-    def __init__(self):
-        self.tokenizer = MBart50TokenizerFast.from_pretrained(
-            "facebook/mbart-large-50", 
-            src_lang="ru_RU", 
-            tgt_lang="ru_RU"
-        )
-        self.model = MBartForConditionalGeneration.from_pretrained(r"D:\Program Files\Lecture_test_front\fast\internal\term_extractor\mbart-1000")
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)
-        self.model.eval()
+# class MBartTermExtractor:
+#     def __init__(self):
+#         self.tokenizer = MBart50TokenizerFast.from_pretrained(
+#             "facebook/mbart-large-50", 
+#             src_lang="ru_RU", 
+#             tgt_lang="ru_RU"
+#         )
+#         self.model = MBartForConditionalGeneration.from_pretrained(r"D:\Program Files\Lecture_test_front\fast\internal\term_extractor\mbart-1000")
+#         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#         self.model.to(self.device)
+#         self.model.eval()
         
-        self.segmenter = Segmenter()
-        self.emb = NewsEmbedding()
-        self.morph_vocab = MorphVocab()
-        self.morph_tagger = NewsMorphTagger(self.emb)
+#         self.segmenter = Segmenter()
+#         self.emb = NewsEmbedding()
+#         self.morph_vocab = MorphVocab()
+#         self.morph_tagger = NewsMorphTagger(self.emb)
     
-    def extract_terms(self, text: str) -> list:
-        input_text = f"Выдели термины, характерные для математики и компьютерных наук: {text}"
-        inputs = self.tokenizer(input_text, return_tensors="pt", max_length=512, truncation=True)
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-        with torch.no_grad():
-            output_tokens = self.model.generate(**inputs, max_length=128)
-        extracted_text = self.tokenizer.decode(output_tokens[0], skip_special_tokens=True)
-        return [term.strip() for term in extracted_text.split(",")]
+#     def extract_terms(self, text: str) -> list:
+#         input_text = f"Выдели термины, характерные для математики и компьютерных наук: {text}"
+#         inputs = self.tokenizer(input_text, return_tensors="pt", max_length=512, truncation=True)
+#         inputs = {k: v.to(self.device) for k, v in inputs.items()}
+#         with torch.no_grad():
+#             output_tokens = self.model.generate(**inputs, max_length=128)
+#         extracted_text = self.tokenizer.decode(output_tokens[0], skip_special_tokens=True)
+#         return [term.strip() for term in extracted_text.split(",")]
     
-    def extract_sentences_with_terms(self, text: str, terms: list) -> dict:
-        doc = Doc(text)
-        doc.segment(self.segmenter)
-        doc.tag_morph(self.morph_tagger)
-        results = {}
+#     def extract_sentences_with_terms(self, text: str, terms: list) -> dict:
+#         doc = Doc(text)
+#         doc.segment(self.segmenter)
+#         doc.tag_morph(self.morph_tagger)
+#         results = {}
         
-        for term in terms:
-            sentences = []
-            for sent in doc.sents:
-                if term.lower() in sent.text.lower():
-                    sentences.append(sent.text)
-            results[term] = sentences
+#         for term in terms:
+#             sentences = []
+#             for sent in doc.sents:
+#                 if term.lower() in sent.text.lower():
+#                     sentences.append(sent.text)
+#             results[term] = sentences
         
-        return results
+#         return results
 

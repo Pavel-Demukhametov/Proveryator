@@ -7,13 +7,10 @@ from typing import Optional
 import asyncpg
 from internal.repositories.auth_repository import SECRET_KEY, ALGORITHM
 from internal.repositories.user_repository import get_user_by_email
-from internal.database import get_db  # Убедитесь, что путь правильный
-  
-# Определение oauth2_scheme
+from internal.database import get_db 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-from internal.schemas import UserResponse  # Убедитесь, что импортируете модель
-
+from internal.schemas import UserResponse
 async def get_current_user(token: str = Depends(oauth2_scheme), conn: asyncpg.Connection = Depends(get_db)) -> UserResponse:
     """
     Получаем текущего пользователя на основе JWT токена.
@@ -31,6 +28,6 @@ async def get_current_user(token: str = Depends(oauth2_scheme), conn: asyncpg.Co
         user = await get_user_by_email(conn, email)
         if user is None:
             raise credentials_exception
-        return UserResponse(**user)  # Преобразуем dict в Pydantic модель
+        return UserResponse(**user)
     except JWTError:
         raise credentials_exception

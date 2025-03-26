@@ -49,21 +49,26 @@
 #         return results
 
 
-from typing import List, Dict
+from typing import List
 from g4f.client import Client
 from g4f.Provider import RetryProvider, ChatGLM, DDG, Free2GPT, GizAI, Liaobots, OIVSCode, PollinationsAI
 import json
 from natasha import Doc, Segmenter, NewsEmbedding, MorphVocab, NewsMorphTagger
+from typing import List, Tuple, Dict, Union
+from internal.entity_linker.entity_linker_2 import check_term_exists
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List
 
 class MBartTermExtractor:
     def __init__(self):
-        providers = [DDG, PollinationsAI, Liaobots, OIVSCode, Free2GPT, GizAI, ChatGLM]
+        providers = [RetryProvider, ChatGLM, DDG, Free2GPT, GizAI, Liaobots, OIVSCode, PollinationsAI]
         self.client = Client(provider=RetryProvider(providers, shuffle=False))
         self.model = "gpt-4o-mini"
 
         self.prompt_template = (
-            "Проанализируй приведенный ниже текст на русском языке и извлеки из него ключевые термины лекции, характерные для математики и компьютерных наук. "
-            "Перечисли только термины через запятую без каких-либо дополнительных комментариев.\n"
+            "Проанализируй приведенный ниже текст на русском языке и извлеки из него термины лекции, характерные для математики и компьютерных наук. "
+            "Это должны быть только термины. Перечисли только термины через запятую без каких-либо дополнительных комментариев.\n"
             "Текст: \"{}\""
         )
 
@@ -72,7 +77,8 @@ class MBartTermExtractor:
         self.morph_vocab = MorphVocab()
         self.morph_tagger = NewsMorphTagger(self.emb)
     
-    def extract_terms(self, text: str) -> list:
+    def extract_terms_chunk(self, text: str) -> List[str]:
+        """Извлекает термины из переданного текста."""
         prompt = self.prompt_template.format(text)
         try:
             response = self.client.chat.completions.create(
@@ -98,28 +104,54 @@ class MBartTermExtractor:
             token.lemmatize(self.morph_vocab)
             tokens.append(token.lemma.lower() if token.lemma else token.text.lower())
         return ' '.join(tokens)
-    def extract_sentences_with_term(self, text: str, term: str) -> list:
+    
+    def split_text(self, text: str, max_chunk_size: int = 500) -> List[str]:
         """
-        Извлекает предложения, в которых присутствует лемматизированный термин,
-        а также соседние предложения (до и после найденного).
-        Возвращает список предложений.
+        Делит текст на части, каждая не длиннее max_chunk_size символов.
+        Предпочтительно делит по границам предложений (точкам).
         """
-        doc = Doc(text)
-        doc.segment(self.segmenter)
-        term_lemmatized = self.lemmatize_text(term)
-        matching_sentences = []
-        sentences = list(doc.sents)
+        chunks = []
+        start = 0
+        while start < len(text):
+            end = start + max_chunk_size
+            if end >= len(text):
+                chunks.append(text[start:].strip())
+                break
+            # Ищем последнюю точку в пределах текущего отрезка
+            period_index = text.rfind(".", start, end)
+            if period_index == -1:
+                period_index = end  # если точек нет, берём отрезок фиксированной длины
+            else:
+                period_index += 1  # включаем саму точку
+            chunk = text[start:period_index].strip()
+            if chunk:
+                chunks.append(chunk)
+            start = period_index
+        return chunks
+    def extract_terms(self, text: str, max_chunk_size: int = 4000) -> List[str]:
+        """
+        Делит большой текст на части, параллельно извлекает термины для каждой части, 
+        проверяет их наличие в Wikidata и объединяет их, устраняя дублирование.
+        """
+        chunks = self.split_text(text, max_chunk_size)
+        valid_terms = set()
         
-        for i, sent in enumerate(sentences):
-            lemmatized_sentence = self.lemmatize_text(sent.text)
-            if term_lemmatized in lemmatized_sentence:
-                if i > 0:
-                    matching_sentences.append(sentences[i-1].text)
-                matching_sentences.append(sent.text)
-                if i < len(sentences) - 1:
-                    matching_sentences.append(sentences[i+1].text)
-                    
-        return matching_sentences
+        def process_chunk(chunk: str, idx: int) -> List[str]:
+            print(f"Обработка части {idx + 1}/{len(chunks)}")
+            terms = self.extract_terms_chunk(chunk)
+            valid_terms_chunk = []
+            for term in terms:
+                if check_term_exists(term):
+                    valid_terms_chunk.append(term)
+                else:
+                    print(f"Термин '{term}' не найден в Wikidata.")
+            return valid_terms_chunk
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(process_chunk, chunk, idx) for idx, chunk in enumerate(chunks)]
+            for future in as_completed(futures):
+                valid_terms.update(future.result())
+
+        return list(valid_terms)
 
     def extract_sentences_with_terms(self, text: str, terms: List[str]) -> Dict[str, List[str]]:
         """

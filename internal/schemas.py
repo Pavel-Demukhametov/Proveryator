@@ -8,15 +8,8 @@ class GeneralTheme(BaseModel):
 
 class ByThemesTheme(BaseModel):
     keyword: str
-    sentences: List[str]
     multipleChoiceCount: int = Field(..., ge=0, description="Количество вопросов с одним правильным ответом.")
     openAnswerCount: int = Field(..., ge=0, description="Количество вопросов с открытым ответом.")
-
-class Theme(BaseModel):
-    keyword: str
-    sentences: List[str]
-    multipleChoiceCount: Optional[int] = 0
-    openAnswerCount: Optional[int] = 0
 
 class GeneralTestCreationRequest(BaseModel):
     method: Literal['general']
@@ -42,15 +35,20 @@ class GeneralTestCreationRequest(BaseModel):
                 'Необходимо указать хотя бы одно количество вопросов: с одним правильным ответом или с открытым ответом.'
             )
         return self
+class Theme(BaseModel):
+    keyword: Union[str, List[str]] = Field(..., alias="keyword")
+    multipleChoiceCount: int = Field(0, description="Количество вопросов с одним правильным ответом.")
+    openAnswerCount: int = Field(0, description="Количество вопросов с открытым ответом.")
 
+    class Config:
+        extra = "ignore"
+        allow_population_by_field_name = True
 class ByThemesTestCreationRequest(BaseModel):
-    method: Literal['byThemes']
+    method: str
     title: str
-#    testTypeId: int = Field(..., ge=1, description="ID типа теста, выбранного пользователем")
     lectureMaterials: str
-    themes: List[ByThemesTheme] = Field(
-        ..., min_items=1, description="Должна быть выбрана хотя бы одна тема."
-    )
+    themes: List[Theme]
+
 
 TestCreationRequest = Union[GeneralTestCreationRequest, ByThemesTestCreationRequest]
 
@@ -60,8 +58,13 @@ class Question(BaseModel):
     answer: Optional[str] = None 
     options: Optional[List[str]] = None  
     sentence: str
+
     class Config:
         orm_mode = True
+
+
+
+
 
 class TestCreationResponse(BaseModel):
     message: str
@@ -70,7 +73,6 @@ class TestCreationResponse(BaseModel):
     lectureMaterials: str
     questions: List[Question]
     themes: List[Theme]
-
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=50, description="Имя пользователя должно быть от 3 до 50 символов.")
     email: EmailStr

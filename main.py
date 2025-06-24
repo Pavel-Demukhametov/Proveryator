@@ -7,16 +7,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import ValidationError
-
+import os, uuid
 from internal.handlers.handlers import (
     handle_lecture_upload,
     handle_test_creation,
     handle_websocket_transcription,
+    _run_generation
 )
 from internal.auth.registration import handle_registration
 from internal.auth.authentication import handle_login
 from internal.schemas import (
     TestCreationRequest,
+    TestCreationResponse,
     ByThemesTheme,
     GeneralTestCreationRequest,
     ByThemesTestCreationRequest,
@@ -27,7 +29,7 @@ from internal.schemas import (
     TokenData,
     QuestionTypeResponse
 )
-from internal.term_extractor.term_extractor import MBartTermExtractor
+from internal.term_extractor.term_extractor import TermExtractor
 from internal.database import get_db
 from internal.utils.user import get_current_user
 from internal.utils.gift_generation import convert_to_gift
@@ -53,7 +55,7 @@ from dotenv import load_dotenv
 from minio import Minio
 from minio.error import S3Error
 from fastapi import APIRouter
-
+from internal.handlers.handlers import router as lecture_router
 load_dotenv()
 
 app = FastAPI()
@@ -72,11 +74,11 @@ minio_client = Minio(
     secret_key="password",           # замените на свой
     secure=False                     # True, если используете HTTPS
 )
-
+app.include_router(lecture_router, prefix="/api")
 BUCKET_NAME = "proveryator"
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login/")
-keyword_extractor = MBartTermExtractor()
+keyword_extractor = TermExtractor()
 logger = logging.getLogger("main")
 logger.setLevel(logging.INFO)
 
@@ -94,9 +96,6 @@ executor = ThreadPoolExecutor(max_workers=8)
 
 
 async def get_current_user_dependency(token: str = Depends(oauth2_scheme), conn: asyncpg.Connection = Depends(get_db)) -> UserResponse:
-    """
-    Получает текущего пользователя на основе JWT токена.
-    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Неверный токен.",
@@ -159,16 +158,13 @@ async def login(user: UserLogin, conn: asyncpg.Connection = Depends(get_db)):
 
 @app.post("/api/upload/")
 async def lecture_upload(
-    file: Optional[UploadFile] = File(None),
+    files: Optional[List[UploadFile]] = File(None),
     materials: Optional[str] = Form(None)
 ):
-    return await handle_lecture_upload(file, materials)
+    return await handle_lecture_upload(files, materials)
 
 @app.post("/api/tests/download/")
 async def download_gift_file(request: Request):
-    """
-    Создаёт файл GIFT на лету из предоставленных данных и отправляет его клиенту для загрузки.
-    """
     try:
         data = await request.json()
         test_title = data.get("title", "default_test").strip()
@@ -202,57 +198,68 @@ async def download_gift_file(request: Request):
         raise HTTPException(status_code=500, detail="Произошла ошибка при создании файла GIFT.")
 
 
-@app.post("/api/tests/create/")
+progress_map: dict[str, float] = {}
+result_map: dict[str, TestCreationResponse] = {}
+
+
+
+@app.post("/api/tests/create/", status_code=202)
 async def test_creation(
     request: Request,
+    background_tasks: BackgroundTasks,
     conn: asyncpg.Connection = Depends(get_db),
 ):
-    """
-    Создание теста. Доступно без авторизации.
-    """
     try:
-        data = await request.json()
-        method = data.get("method")
-        if method not in ["general", "byThemes"]:
-            raise HTTPException(status_code=400, detail="Неверный метод создания теста.")
-
-        if method == "general":
-            try:
-                test_request = GeneralTestCreationRequest(**data)
-            except ValidationError as ve:
-                raise HTTPException(status_code=400, detail=ve.errors())
-
-        elif method == "byThemes":
-            try:
-                test_request = ByThemesTestCreationRequest(**data)
-            except ValidationError as ve:
-                raise HTTPException(status_code=400, detail=ve.errors())
-
-        else:
-            raise HTTPException(status_code=400, detail="Неверный метод создания теста.")
-        # Асинхронный вызов синхронной функции для обработки создания теста
-        response = await asyncio.get_event_loop().run_in_executor(
-            None, handle_test_creation_sync, test_request
-        )
-        return response
-
+        raw = await request.json()
     except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Некорректный формат JSON.")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(400, "Некорректный формат JSON.")
 
-def handle_test_creation_sync(test_request: Union[GeneralTestCreationRequest, ByThemesTestCreationRequest]):
-    """
-    Синхронный обработчик для создания теста.
-    Выполняется в отдельном потоке, чтобы не блокировать event loop.
-    """
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    method = raw.get("method")
+    if method not in ("general", "byThemes"):
+        raise HTTPException(400, "Неверный метод создания теста.")
+
+    # Валидация входных данных
     try:
-        response = loop.run_until_complete(handle_test_creation(test_request))
-        return response
-    finally:
-        loop.close()
+        if method == "general":
+            test_request = GeneralTestCreationRequest(**raw)
+        else:
+            test_request = ByThemesTestCreationRequest(**raw)
+    except ValidationError as ve:
+        raise HTTPException(400, ve.errors())
+
+    task_id = str(uuid.uuid4())
+    progress_map[task_id] = 0.0
+    result_map[task_id] = None  
+
+    # Запускаем background-задачу
+    background_tasks.add_task(_run_generation, task_id, test_request, progress_map, result_map)
+
+    return {"task_id": task_id}
+
+
+
+@app.get("/api/tests/{task_id}/progress")
+async def get_test_progress(task_id: str):
+    """
+    Возвращает JSON: { "progress": 0.0–1.0 }.
+    """
+    if task_id not in progress_map:
+        raise HTTPException(404, "Task not found")
+    return {"progress": progress_map[task_id]}
+
+
+@app.get("/api/tests/{task_id}/result", response_model=TestCreationResponse)
+async def get_test_result(task_id: str):
+    """
+    Если прогресс <1.0 — 202, иначе отдаем готовый TestCreationResponse.
+    """
+    if task_id not in progress_map:
+        raise HTTPException(404, "Task not found")
+    if progress_map[task_id] < 1.0:
+        raise HTTPException(202, "Result not ready")
+    return result_map[task_id]
+
+
 
 @app.post("/api/tests/save/")
 async def test_save(

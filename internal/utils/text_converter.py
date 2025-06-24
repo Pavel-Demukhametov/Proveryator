@@ -68,7 +68,7 @@ def extract_text_from_pptx(file_path: str) -> str:
         raise e
 
 class AudioTranscription:
-    def __init__(self, model_name="large-v3-turbo", compute_type="float16", batch_size=16, hf_token="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", diarization=False):
+    def __init__(self, model_name="large-v3-turbo", compute_type="float16", batch_size=16, hf_token="", diarization=False):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.batch_size = batch_size
         self.compute_type = compute_type

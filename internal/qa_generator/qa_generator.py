@@ -4,16 +4,27 @@ import random
 import re
 import requests
 import torch
-from transformers import AutoTokenizer, T5ForConditionalGeneration
-from typing import List, Optional, Dict
-import asyncio
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from typing import List, Dict
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def get_access_token():
-    oauth_url = 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth'
-    uid = '639a832c-d12a-4c2f-9207-f654e0d86fa6'
-    client_base64 = 'NjM5YTgzMmMtZDEyYS00YzJmLTkyMDctZjY1NGUwZDg2ZmE2OmE4MTY2MTg1LWQ1OWEtNGVkOC05ZmEzLWRmYjRlOTdjNDAxOA=='
+    """Получение токена доступа для аутентификации в GigaChat API"""
+    oauth_url = os.getenv("GIGACHAT_OAUTH_URL")
+    uid = os.getenv("GIGACHAT_UID")
+    client_base64 = os.getenv("GIGACHAT_CLIENT_BASE64")
+    cert_path = os.getenv("GIGACHAT_CERT_PATH")
+
+    if not all([oauth_url, uid, client_base64, cert_path]):
+        logger.error("Missing required environment variables for GigaChat authentication")
+        raise ValueError("One or more environment variables (GIGACHAT_OAUTH_URL, GIGACHAT_UID, GIGACHAT_CLIENT_BASE64, GIGACHAT_CERT_PATH) are not set")
+
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'application/json',
@@ -21,67 +32,84 @@ def get_access_token():
         'Authorization': 'Basic ' + client_base64
     }
     payload = 'scope=GIGACHAT_API_PERS'
-    response = requests.post(oauth_url, headers=headers, data=payload, verify="C:\\Users\\purit\\Downloads\\russian_trusted_root_ca.cer")
-    return response.json().get('access_token')
+    try:
+        response = requests.post(oauth_url, headers=headers, data=payload, verify=cert_path)
+        response.raise_for_status()
+        return response.json().get('access_token')
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to get access token: {e}")
+        raise
 
 def parse_distractors(response_content: str) -> List[str]:
+    """Парсинг неправильных вариантов ответа (дистракторов) из ответа GigaChat"""
     distractors = []
     response_content = re.sub(r'Неправильные варианты ответа[:\-]?\s*', '', response_content, flags=re.IGNORECASE)
     response_content = re.sub(r'3 неправильных варианта ответа[:\-]?\s*', '', response_content, flags=re.IGNORECASE)
     numbered = re.findall(r'\d+[.)]\s*([^;]+)', response_content)
     if numbered and len(numbered) >= 3:
         distractors = [d.strip() for d in numbered[:3]]
-        logger.info("Дистракторы успешно распознаны с нумерацией.")
         return distractors
     split_distractors = [d.strip() for d in response_content.split(';') if d.strip()]
     if len(split_distractors) >= 3:
         distractors = split_distractors[:3]
-        logger.info("Дистракторы успешно распознаны без нумерации.")
         return distractors
     additional = re.split(r'\d+[.)]\s*', response_content)
     additional = [d.strip() for d in additional if d.strip()]
     if len(additional) >= 3:
         distractors = additional[:3]
-        logger.info("Дистракторы успешно распознаны при разделении по нумерации без точек с запятой.")
         return distractors
     sentences = re.split(r'[.!?]\s*', response_content)
     sentences = [s.strip() for s in sentences if s.strip()]
     if len(sentences) >= 3:
         distractors = sentences[:3]
-        logger.warning("Дистракторы распознаны по предложениям, так как другие методы не сработали.")
+        logger.warning("Distractors parsed by sentences, other methods did not work.")
         return distractors
-    logger.error("Не удалось распознать дистракторы из ответа.")
+    logger.error("Failed to parse distractors from response.")
     return distractors
 
-def generate_distractors(access_token: str, text: str, correct_answer: str) -> List[str]:
+def generate_distractors(access_token: str, question: str, correct_answer: str) -> List[str]:
+    """Генерация трех неправильных вариантов ответа для вопроса на основе вопроса и правильного ответа"""
     prompt = (
-        'На основе предоставленного текста и правильного ответа, составь 3 неправильных варианта ответа (дистракторы), '
-        'не надо добавлять ещё какой-то текст или нумеровать неправильные варианты. Твой ответ должен содержать только '
-        '3 неправильных варианта ответа, разделённых точкой с запятой. Текст: {text}. '
-        'Правильный ответ: {correct_answer}'
+        '''
+        Вы ассистент в области информационных технологий для создания тестов, задача которого — сгенерировать три неправильных варианта ответа (дистрактора) для вопроса с множественным выбором на основе предоставленного вопроса и правильного ответа, связанных с IT. Ваш ответ должен содержать ровно три неправильных варианта, разделенных точкой с запятой, без дополнительного текста, нумерации или объяснений. Дистракторы должны быть правдоподобными, но неверными в контексте вопроса и относиться к IT-тематике.
+        Примеры:
+            Вопрос: "Какой порт по умолчанию используется для HTTPS?" Правильный ответ: "443" Вывод: 80;22;12
+            Вопрос: "Какой язык программирования выполняется в браузере и отвечает за динамическое поведение веб‑страниц?" Правильный ответ: "JavaScript" Вывод: Python;Java;C#
+            Вопрос: "Какой менеджер пакетов применяется в проектах на Node.js?" Правильный ответ: "NPM" Вывод: pip;gem;Maven
+        Задача: Вопрос: {question} Правильный ответ: {correct_answer} Вывод: [три неправильных варианта, разделенных точкой с запятой]
+        '''
     )
-    formatted_prompt = prompt.format(text=text, correct_answer=correct_answer)
+    formatted_prompt = prompt.format(question=question, correct_answer=correct_answer)
     payload = json.dumps({
         "model": "GigaChat",
         "messages": [{"role": "user", "content": formatted_prompt}],
         "stream": False,
         "repetition_penalty": 1
     })
-    completions_url = 'https://gigachat.devices.sberbank.ru/api/v1/chat/completions'
+    completions_url = os.getenv("GIGACHAT_COMPLETIONS_URL")
+    if not completions_url:
+        logger.error("Missing GIGACHAT_COMPLETIONS_URL environment variable")
+        raise ValueError("GIGACHAT_COMPLETIONS_URL is not set")
+
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
         'Authorization': 'Bearer ' + access_token
     }
+    cert_path = os.getenv("GIGACHAT_CERT_PATH")
+    if not cert_path:
+        logger.error("Missing GIGACHAT_CERT_PATH environment variable")
+        raise ValueError("GIGACHAT_CERT_PATH is not set")
+
     try:
-        response = requests.post(completions_url, headers=headers, data=payload, verify="C:\\Users\\purit\\Downloads\\russian_trusted_root_ca.cer")
+        response = requests.post(completions_url, headers=headers, data=payload, verify=cert_path)
         response.raise_for_status()
         response_json = response.json()
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error GigaChat API: {e}")
+        logger.error(f"Error in GigaChat API request: {e}")
         return []
     if "choices" not in response_json or not response_json["choices"]:
-        logger.error("Ответ от GigaChat не содержит необходимых данных.")
+        logger.error("GigaChat response does not contain needed data.")
         return []
     response_content = response_json["choices"][0]["message"]["content"]
     distractors = parse_distractors(response_content)
@@ -93,63 +121,82 @@ def generate_distractors(access_token: str, text: str, correct_answer: str) -> L
             if len(distractors) == 3:
                 break
     if len(distractors) < 3:
+        logger.error("Not enough distractors generated.")
         return []
     return distractors
 
-
 class QAGenerator:
-    def __init__(self, endpoint_url: str = 'http://localhost:8673/asxz23', timeout: int = 10):
-        self.endpoint_url = endpoint_url
-        self.timeout = timeout
-        self.headers = {'Content-Type': 'application/json'}
-        self.mc_prompt_template = (
-            'Проанализируй приведенный ниже текст на русском языке и сгенерируй вопрос с четырьмя вариантами ответов на основе его содержания. '
-            'Один из вариантов должен быть правильным. Ответ должен быть простым, состоять максимум из нескольких слов. '
-            'Остальные варианты ответа должны быть неправильными и не подходить.\n'
-            'Не включай никаких комментариев, ответь только JSON-объектом следующего вида:\n'
-            '{{\n  "Вопрос": "<текст вопроса на русском языке>",\n  "Варианты": [<вариант1>, <вариант2>, <вариант3>, <вариант4>],\n  "Правильный_ответ": <индекс верного ответа в массиве Варианты, начиная с 0>\n}}\n'
-            'Текст для анализа: "{}"\n'
+    def __init__(self,
+                 qa_model_path: str = os.getenv("QA_MODEL_PATH"),
+                 tokenizer_model: str = os.getenv("TOKENIZER_MODEL_PATH")):
+        """Инициализация генератора вопросов и ответов с использованием модели и токенизатора"""
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_model)
+        self.qa_model = AutoModelForSeq2SeqLM.from_pretrained(qa_model_path).to(self.device)
+        self.access_token = get_access_token()
+
+    def gen_qa_pairs(self, text: str, num_pairs: int = 1) -> List[str]:
+        """Генерация пар вопрос-ответ на основе предоставленного текста"""
+        input_ids = self.tokenizer(
+            text,
+            max_length=512,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt"
+        ).input_ids.to(self.device)
+        qa_ids = self.qa_model.generate(
+            input_ids,
+            max_length=128,
+            num_beams=6,
+            num_return_sequences=num_pairs,
         )
-        self.open_prompt_template = (
-            'Проанализируй приведенный ниже текст на русском языке и сгенерируй открытый вопрос на основе его содержания. '
-            'Также предоставь правильный ответ на этот вопрос. Ответ должен быть простым, состоять максимум из нескольких слов. '
-            'Не включай никаких комментариев, ответь только JSON-объектом следующего вида:\n'
-            '{{\n  "Вопрос": "<текст вопроса на русском языке>",\n  "Правильный_ответ": "<правильный ответ>"\n}}\n'
-            'Текст для анализа: "{}"\n'
-        )
+        qa_pairs = [self.tokenizer.decode(q, skip_special_tokens=True) for q in qa_ids]
+        return qa_pairs
 
-    def generate_questions(self, text: str, is_open: bool) -> Dict[str, str]:
-        try:
-            prompt = self.open_prompt_template.format(text) if is_open else self.mc_prompt_template.format(text)
-            payload = json.dumps({"text": text, "prompt": prompt})
-            
-            response = requests.post(self.endpoint_url, headers=self.headers, data=payload, timeout=self.timeout)
-            response.raise_for_status()
+    def parse_qa_pairs(self, qa_pairs: List[str]) -> List[Dict[str, str]]:
+        """Парсинг сгенерированных пар вопрос-ответ в структурированный формат"""
+        processed_pairs = []
+        seen_pairs = set()
+        for qa in qa_pairs:
+            if "Вопрос:" in qa and "Ответ:" in qa:
+                parts = qa.split("Ответ:")
+                if len(parts) == 2:
+                    question = parts[0].replace("Вопрос:", "").strip()
+                    answer = parts[1].strip()
+                    pair_tuple = (question.lower(), answer.lower())
+                    if pair_tuple not in seen_pairs:
+                        seen_pairs.add(pair_tuple)
+                        processed_pairs.append({
+                            'question': question,
+                            'answer': answer
+                        })
+        return processed_pairs
 
-            response_data = response.json()
-            logger.info(f"Response received: {response_data}")
-            
-            question = response_data.get("Вопрос")
-            correct_answer = response_data.get("Правильный_ответ")
-            distractors = response_data.get("Варианты", []) if not is_open else []
 
-            if not question or correct_answer is None or correct_answer == "":
-                logger.warning("Response missing question or correct answer, skipping.")
-                return {}
-            if not is_open and len(distractors) < 3:
-                logger.warning("Response lacks enough distractors for MC question, skipping.")
-                return {}
-
-            return response_data
-        except requests.exceptions.Timeout:
-            logger.warning(f"Request timed out after {self.timeout} seconds, skipping.")
-            return {}
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Request failed: {e}, skipping.")
-            return {}
-        except ValueError as e:
-            logger.warning(f"Invalid response format: {e}, skipping.")
-            return {}
-
-    def generate_qa(self, text: str, keyword: str, is_open: bool) -> dict:
-        return self.generate_questions(text, is_open)
+    def generate_qa(self, text: str, is_open: bool = False) -> List[Dict]:
+        """Генерация вопросов с правильными ответами и, при необходимости, с вариантами ответа"""
+        qa_strings = self.gen_qa_pairs(text)
+        parsed_pairs = self.parse_qa_pairs(qa_strings)
+        result = []
+        for pair in parsed_pairs:
+            question = pair['question']
+            correct_answer = pair['answer']
+            if is_open:
+                result.append({
+                    "Вопрос": question,
+                    "Правильный_ответ": correct_answer
+                })
+            else:
+                distractors = generate_distractors(self.access_token, question, correct_answer)
+                if len(distractors) < 3:
+                    logger.warning("Not enough distractors for question, skipped.")
+                    continue
+                options = distractors.copy()
+                correct_index = random.randint(0, len(options))
+                options.insert(correct_index, correct_answer)
+                result.append({
+                    "Вопрос": question,
+                    "Варианты": options,
+                    "Правильный_ответ": correct_index
+                })
+        return result

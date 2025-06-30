@@ -15,12 +15,9 @@ class TestGetCurrentUser:
     @patch('internal.utils.user.jwt.decode')
     @patch('internal.utils.user.get_db')
     async def test_get_current_user_success(self, mock_get_db, mock_jwt_decode, mock_get_user_by_email):
-        # Настройка мока для jwt.decode
         token = "valid.token.string"
         payload = {"sub": "user@example.com"}
         mock_jwt_decode.return_value = payload
-
-        # Создаем UUID для поля id
         user_id = uuid4()
         user_data = {
             "id": user_id,
@@ -28,18 +25,13 @@ class TestGetCurrentUser:
             "username": "testuser"
         }
         mock_get_user_by_email.return_value = user_data
-
-        # Настройка мока для get_db (возвращает мок соединения)
         mock_conn = MagicMock()
         mock_get_db.return_value = mock_conn
 
-        # Ожидаемый результат
         expected_user = UserResponse(**user_data)
 
-        # Вызов функции
         result = await get_current_user(token=token, conn=mock_conn)
 
-        # Проверки
         mock_jwt_decode.assert_called_once_with(token, SECRET_KEY, algorithms=[ALGORITHM])
         mock_get_user_by_email.assert_awaited_once_with(mock_conn, "user@example.com")
         assert result == expected_user

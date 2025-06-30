@@ -4,6 +4,8 @@ final_model/
 question_generation_model/
 gift_files/
 uploaded_files/
+.pytest_cache/
 .env
-mbart-1000/
-ruT5-base/
+htmlcov/
+ruT5-base-QG/
+ruSciBert-NER/

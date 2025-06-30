@@ -14,7 +14,6 @@ class ByThemesTheme(BaseModel):
 class GeneralTestCreationRequest(BaseModel):
     method: Literal['general']
     title: str
-#    testTypeId: int = Field(..., ge=1, description="ID типа теста, выбранного пользователем")
     multipleChoiceCount: Optional[int] = Field(
         0, ge=0, description="Общее количество вопросов с одним правильным ответом."
     )
@@ -61,9 +60,6 @@ class Question(BaseModel):
 
     class Config:
         orm_mode = True
-
-
-
 
 
 class TestCreationResponse(BaseModel):

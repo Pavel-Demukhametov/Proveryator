@@ -10,10 +10,9 @@ from internal.qa_generator import (
 )
 from unittest.mock import patch, MagicMock, ANY
 from gensim.models import KeyedVectors
-# Тест для функции get_access_token
+
 @patch('internal.qa_generator.requests.post')
 def test_get_access_token(mock_post):
-    # Настройка мок-ответа
     mock_response = MagicMock()
     mock_response.json.return_value = {'access_token': 'test_token'}
     mock_response.raise_for_status = MagicMock()
@@ -33,7 +32,6 @@ def test_get_access_token(mock_post):
         verify="C:\\Users\\purit\\Downloads\\russian_trusted_root_ca.cer"
     )
 
-# Тесты для функции parse_distractors
 @pytest.mark.parametrize("input_str,expected", [
     (
         "1. Дистрактор A; 2. Дистрактор B; 3. Дистрактор C",
@@ -53,11 +51,11 @@ def test_get_access_token(mock_post):
     ),
     (
         "Дистрактор A; Дистрактор B",
-        []  # Менее 3 дистракторов
+        []
     ),
     (
         "",
-        []  # Пустая строка
+        [] 
     ),
 ])
 def test_parse_distractors(input_str, expected):
@@ -66,13 +64,11 @@ def test_parse_distractors(input_str, expected):
 
 
 
-# Тестирование класса QAGenerator
 @patch('internal.qa_generator.get_access_token')
 @patch('internal.qa_generator.T5ForConditionalGeneration.from_pretrained')
 @patch('internal.qa_generator.AutoTokenizer.from_pretrained')
 @patch('internal.qa_generator.NewsEmbedding')
 def test_qagenerator_initialization(mock_news_embedding, mock_tokenizer, mock_t5_from_pretrained, mock_get_access_token):
-    # Настройка моков
     mock_get_access_token.return_value = 'test_token'
     mock_tokenizer.return_value = MagicMock()
     mock_t5_from_pretrained.return_value = MagicMock()
@@ -89,10 +85,7 @@ def test_qagenerator_initialization(mock_news_embedding, mock_tokenizer, mock_t5
     assert isinstance(qag.emb_model, KeyedVectors)
     assert len(qag.emb_model) == 100
 
-# Тест для метода parse_distractors внутри класса (опционально, если доступно)
-# Альтернативно, мы уже протестировали parse_distractors как отдельную функцию
 
-# Тест для метода gen_distractors класса QAGenerator
 @patch('internal.qa_generator.generate_distractors')
 @patch('internal.qa_generator.get_access_token')
 def test_gen_distractors_class(mock_get_access_token, mock_generate_distractors):

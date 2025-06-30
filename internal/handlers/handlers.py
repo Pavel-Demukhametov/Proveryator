@@ -1,5 +1,3 @@
-# internal/handlers/handlers.py
-
 from fastapi import UploadFile, HTTPException, WebSocket
 from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
@@ -129,7 +127,7 @@ def run_transcription_task(task_id: str, file_paths: List[str], materials: Optio
         combined_materials = clean_sent(combined_materials)
 
         raw_segments = term_extractor.extract_terms(combined_materials)
-        valid_segments = term_extractor.validate_terms(combined_materials, raw_segments, entity_linker)
+        valid_segments = raw_segments
 
         segments = []
         for item in valid_segments:
@@ -144,7 +142,6 @@ def run_transcription_task(task_id: str, file_paths: List[str], materials: Optio
                 'sentences': sentences
             })
 
-        # Сохранение результата
         result_map[task_id] = {
             "segments": segments,
             "materials": combined_materials
@@ -204,17 +201,16 @@ async def _run_generation(task_id: str, test_request: Union[GeneralTestCreationR
                         executor,
                         qa_generator.generate_qa,
                         context_text,
-                        global_keyword,
                         False
                     )
-                    if qa_mc and "Вопрос" in qa_mc:
-                        if is_duplicate(qa_mc["Вопрос"]):
+                    if qa_mc and isinstance(qa_mc, list) and len(qa_mc) > 0 and "Вопрос" in qa_mc[0]:
+                        if is_duplicate(qa_mc[0]["Вопрос"]):
                             new_idx = original_idx + 1 if original_idx + 1 < len(sentences) else original_idx - 1
                             context_text = build_context_window(sentences, new_idx)
                             retries += 1
                             continue
                         else:
-                            qa_pairs.append({"type": "mc", **qa_mc})
+                            qa_pairs.append({"type": "mc", **qa_mc[0]})
                             mc_generated += 1
                             done += 1
                             progress_map[task_id] = done / total if total > 0 else 1.0
@@ -222,7 +218,6 @@ async def _run_generation(task_id: str, test_request: Union[GeneralTestCreationR
                     else:
                         logger.warning(f"Failed to generate MC question for sentence at index {original_idx}, skipping.")
                         retries += 1
-            
             context_text = build_context_window(sentences, original_idx)
             if oa_generated < oa_total:
                 retries = 0
@@ -231,7 +226,6 @@ async def _run_generation(task_id: str, test_request: Union[GeneralTestCreationR
                         executor,
                         qa_generator.generate_qa,
                         context_text,
-                        global_keyword,
                         True
                     )
                     if qa_oa and "Вопрос" in qa_oa:
@@ -284,7 +278,6 @@ async def _run_generation(task_id: str, test_request: Union[GeneralTestCreationR
                             executor,
                             qa_generator.generate_qa,
                             context_text,
-                            theme_keyword,
                             False
                         )
                         if qa_mc and "Вопрос" in qa_mc:
@@ -316,7 +309,6 @@ async def _run_generation(task_id: str, test_request: Union[GeneralTestCreationR
                             executor,
                             qa_generator.generate_qa,
                             context_text,
-                            theme_keyword,
                             True
                         )
                         if qa_oa and "Вопрос" in qa_oa:
@@ -409,223 +401,8 @@ async def _run_generation(task_id: str, test_request: Union[GeneralTestCreationR
     progress_map[task_id] = 1.0
 
 
-async def handle_test_creation(
-    test_request: Union[GeneralTestCreationRequest, ByThemesTestCreationRequest]
-) -> JSONResponse:
-    """
-    Обработчик для создания теста.
-    
-    При методе по темам (ByThemesTestCreationRequest) глобальное ранжирование предложений 
-    производится по объединённым ключевым словам из всех тем, но при генерации вопросов для 
-    каждой темы используется только то предложение, в котором содержится ключевое слово этой темы.
-    """
-    qa_pairs = []
-    source_text = test_request.lectureMaterials
-    sentences = split_into_sentences(source_text)
-    sentences = remove_duplicate_sentences(sentences)
-    global_keyword = []
-    if hasattr(test_request, "themes") and test_request.themes:
-        for theme in test_request.themes:
-            if hasattr(theme, "keyword") and theme.keyword:
-                global_keyword.append(theme.keyword)
-            else:
-                global_keyword.append(theme.keyword)
-    global_keyword = list(set(global_keyword))
-    ranked_with_idx = rank_sentences_with_index(sentences, global_keyword)
-
-    structured_themes = []
-    structured_questions = []
-
-    def is_duplicate(question_text: str) -> bool:
-        return any(q.get("Вопрос") == question_text for q in qa_pairs)
-    MAX_RETRIES = 3
-    print("хуй1")
-    if isinstance(test_request, GeneralTestCreationRequest):
-        total_mc = test_request.multipleChoiceCount
-        total_oa = test_request.openAnswerCount
-        mc_generated = 0
-        oa_generated = 0
-        print("хуй2")
-        for original_idx, sent in ranked_with_idx:
-            if mc_generated >= total_mc and oa_generated >= total_oa:
-                break
-            context_text = build_context_window(sentences, original_idx)
-            if mc_generated < total_mc:
-                retries = 0
-                while retries < MAX_RETRIES:
-                    qa_mc = await asyncio.get_event_loop().run_in_executor(
-                        executor,
-                        qa_generator.generate_qa,
-                        context_text,
-                        global_keyword,
-                        False
-                    )
-                    if qa_mc and "Вопрос" in qa_mc:
-                        if is_duplicate(qa_mc["Вопрос"]):
-                            new_idx = original_idx + 1 if original_idx + 1 < len(sentences) else original_idx - 1
-                            context_text = build_context_window(sentences, new_idx)
-                            retries += 1
-                            continue
-                        else:
-                            qa_pairs.append({ "type": "mc", **qa_mc })
-                            mc_generated += 1
-                    break
-
-            context_text = build_context_window(sentences, original_idx)
-            print("хуй ", context_text)
-            if oa_generated < total_oa:
-                retries = 0
-                while retries < MAX_RETRIES:
-                    qa_oa = await asyncio.get_event_loop().run_in_executor(
-                        executor,
-                        qa_generator.generate_qa,
-                        context_text,
-                        global_keyword,
-                        True
-                    )
-                    if qa_oa and "Вопрос" in qa_oa:
-                        if is_duplicate(qa_oa["Вопрос"]):
-                            new_idx = original_idx + 1 if original_idx + 1 < len(sentences) else original_idx - 1
-                            context_text = build_context_window(sentences, new_idx)
-                            retries += 1
-                            continue
-                        else:
-                            qa_pairs.append({ "type": "open", **qa_oa })
-                            oa_generated += 1
-                    break
-
-        if mc_generated < total_mc or oa_generated < total_oa:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Требуется: {total_mc} MC и {total_oa} Open, сгенерировано: {mc_generated} MC и {oa_generated} Open."
-            )
-        structured_themes.append(Theme(
-            keyword=global_keyword,
-            lectureMaterials=source_text,
-            multipleChoiceCount=total_mc,
-            openAnswerCount=total_oa
-        ))
-
-    elif isinstance(test_request, ByThemesTestCreationRequest):
-        print("хуй3")
-        for theme in test_request.themes:
-            theme_keyword = theme.keyword
-
-            mc_needed = theme.multipleChoiceCount
-            oa_needed = theme.openAnswerCount
-            mc_generated = 0
-            oa_generated = 0
-
-            for original_idx, sent in ranked_with_idx:
-                if not any(keyword in sent for keyword in theme_keyword.split()):
-                    continue
-
-                if mc_generated >= mc_needed and oa_generated >= oa_needed:
-                    break
-
-                context_text = build_context_window(sentences, original_idx)
-
-                if mc_generated < mc_needed:
-                    retries = 0
-                    while retries < MAX_RETRIES:
-                        qa_mc = await asyncio.get_event_loop().run_in_executor(
-                            executor,
-                            qa_generator.generate_qa,
-                            context_text,
-                            theme_keyword,
-                            False
-                        )
-                        if qa_mc and "Вопрос" in qa_mc:
-                            if is_duplicate(qa_mc["Вопрос"]):
-                                new_idx = original_idx + 1 if original_idx + 1 < len(sentences) else original_idx - 1
-                                context_text = build_context_window(sentences, new_idx)
-                                retries += 1
-                                continue
-                            else:
-                                qa_pairs.append({
-                                    "type": "mc",
-                                    "theme": theme.keyword,
-                                    "sentence": sent,
-                                    **qa_mc
-                                })
-                                mc_generated += 1
-                        break
-
-                context_text = build_context_window(sentences, original_idx)
-                if oa_generated < oa_needed:
-                    retries = 0
-                    while retries < MAX_RETRIES:
-                        qa_oa = await asyncio.get_event_loop().run_in_executor(
-                            executor,
-                            qa_generator.generate_qa,
-                            context_text,
-                            theme_keyword,
-                            True
-                        )
-                        if qa_oa and "Вопрос" in qa_oa:
-                            if is_duplicate(qa_oa["Вопрос"]):
-                                new_idx = original_idx + 1 if original_idx + 1 < len(sentences) else original_idx - 1
-                                context_text = build_context_window(sentences, new_idx)
-                                retries += 1
-                                continue
-                            else:
-                                qa_pairs.append({
-                                    "type": "open",
-                                    "theme": theme.keyword,
-                                    "sentence": sent,
-                                    **qa_oa
-                                })
-                                oa_generated += 1
-                        break
-
-            structured_themes.append(Theme(
-                keyword=theme_keyword,
-                lectureMaterials=source_text,
-                multipleChoiceCount=mc_needed,
-                openAnswerCount=oa_needed
-            ))
-    else:
-        raise HTTPException(status_code=400, detail="Неверный формат запроса.")
-    if not qa_pairs:
-        raise HTTPException(
-            status_code=400,
-            detail="Не удалось сгенерировать ни одного вопроса."
-        )
-    for pair in qa_pairs:
-        if pair["type"] == "mc":
-            options = pair["Варианты"]
-            correct_answer = options[pair["Правильный_ответ"]]
-            structured_questions.append(Question(
-                type="mc",
-                question=pair["Вопрос"],
-                answer=correct_answer,
-                options=options,
-                sentence=pair.get("sentence", pair["Вопрос"]),
-                theme=pair.get("theme")
-            ))
-        elif pair["type"] == "open":
-            structured_questions.append(Question(
-                type="open",
-                question=pair["Вопрос"],
-                answer=pair["Правильный_ответ"],
-                sentence=pair.get("sentence", pair["Вопрос"]),
-                theme=pair.get("theme")
-            ))
-
-    response_data = TestCreationResponse(
-        message="Тест успешно создан.",
-        method=test_request.method,
-        title=test_request.title,
-        lectureMaterials=source_text,
-        questions=structured_questions,
-        themes=structured_themes
-    )
-    return JSONResponse(content=response_data.dict(), status_code=200)
-async def handle_websocket_transcription(websocket: WebSocket):
-    await audio_transcriber.transcribe_audio_stream(websocket)
 
 def build_context_window(sentences: list[str], center_index: int, min_words: int = 50) -> str:
-
     def word_count(text: str) -> int:
         return len(text.split())
 

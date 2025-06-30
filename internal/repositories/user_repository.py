@@ -26,7 +26,6 @@ async def create_user(conn: asyncpg.Connection, user: UserCreate) -> UserRespons
     """
     Создает нового пользователя.
     """
-
     password = ph.hash(user.password)
 
     new_user = await conn.fetchrow(

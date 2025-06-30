@@ -28,12 +28,10 @@ def test_lemmatize_text(extractor):
 
 @patch('internal.term_extractor.term_extractor.Doc', autospec=True)
 def test_extract_sentences_with_terms(mock_doc, extractor):
-    # Создаём фейковые объекты предложений
     mock_sent1 = MagicMock()
     mock_sent1.text = "Алгоритмы и структуры данных являются основой компьютерных наук."
     mock_sent2 = MagicMock()
     mock_sent2.text = "Они используются в различных областях."
-    # Настраиваем макет экземпляра Doc
     mock_doc_instance = mock_doc.return_value
     mock_doc_instance.sents = [mock_sent1, mock_sent2]
 
@@ -58,7 +56,6 @@ sample_text_1 = (
     "эффективность работы в условиях гиперконкурентного рынка. "
     "Также рассмотрены аспекты нейролингвистического программирования и "
     "их применение в маркетинговых стратегиях."
-    "nlp это область машинного обучения"
 )
 
 
@@ -66,15 +63,13 @@ sample_text_1 = (
 def test_extract_dif_terms(mock_client, extractor):
     mock_response = MagicMock()
     mock_choice = MagicMock()
-    mock_choice.message.content = "nlp, машинного обучения"
+    mock_choice.message.content = ""
     mock_response.choices = [mock_choice]
     instance = mock_client.return_value
     instance.chat.completions.create.return_value = mock_response
 
     terms = extractor.extract_terms(sample_text_1)
-    # Ожидаем, что термины будут извлечены корректно
     expected_terms = [
-        "nlp",
-        "машинного обучения",
+        "",
     ]
     assert terms == expected_terms

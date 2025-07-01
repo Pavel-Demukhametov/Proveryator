@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi_app
+    env_file:
+      - .env
+    ports:
+      - "5050:5050"
+    volumes:
+      - .:/fast
+      - C:\Users\purit\Downloads\russian_trusted_root_ca.cer:/certs/russian_trusted_root_ca.cer
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+  elasticsearch:
+    image: elasticsearch:8.8.0
+    container_name: es01
+    env_file:
+      - .env
+    environment:
+      - node.name=es01
+      - cluster.name=docker-cluster
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - ELASTIC_PASSWORD=SecurePass123
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=mydatabase
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  esdata:
+  minio_data:
+  postgres_data:

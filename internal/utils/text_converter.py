@@ -98,7 +98,7 @@ class AudioTranscription:
                  compute_type: str = "float16", 
                  batch_size: int = 16, 
                  hf_token: str = os.getenv("HF_TOKEN", ""),
-                 diarization: bool = False):
+                 diarization: bool = True):
         """
         Инициализация класса, загрузка моделей WhisperX и опционально модели диаризации
         """

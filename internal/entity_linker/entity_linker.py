@@ -1,7 +1,6 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForTokenClassification
 from natasha import Doc, Segmenter, NewsEmbedding, MorphVocab, NewsMorphTagger
-from internal.entity_linker.entity_linker import EntityLinker
 from typing import List
 import logging
 from elasticsearch import Elasticsearch
